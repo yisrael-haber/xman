@@ -12,12 +12,10 @@ import (
 var assets embed.FS
 
 func main() {
-	// Create an instance of the app structure
 	app := NewApp()
 
-	// Create application with options
 	err := wails.Run(&options.App{
-		Title:  "manosphere",
+		Title:  "xman",
 		Width:  1280,
 		Height: 800,
 		AssetServer: &assetserver.Options{
@@ -28,12 +26,7 @@ func main() {
 		OnShutdown:       app.shutdown,
 		Bind: []interface{}{
 			app,
-			app.VMInfo,
-			app.FileTransfer,
-			app.PacketCapture,
-			app.Snapshots,
-			app.GuestExec,
-			app.Inventory,
+			app.Manager,
 			app.Jobs,
 		},
 	})

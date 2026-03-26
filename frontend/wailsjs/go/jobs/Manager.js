@@ -26,6 +26,10 @@ export function List() {
   return window['go']['jobs']['Manager']['List']();
 }
 
+export function SetContext(arg1) {
+  return window['go']['jobs']['Manager']['SetContext'](arg1);
+}
+
 export function Submit(arg1, arg2, arg3) {
   return window['go']['jobs']['Manager']['Submit'](arg1, arg2, arg3);
 }

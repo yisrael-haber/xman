@@ -1,144 +1,45 @@
 export namespace config {
 	
-	export class ConnectionSettings {
+	export class ConnectRequest {
+	    backendType: string;
 	    url: string;
 	    username: string;
-	    insecure: boolean;
 	    password?: string;
+	    insecure: boolean;
+	    vmrunPath: string;
+	    vmDir: string;
 	
 	    static createFrom(source: any = {}) {
-	        return new ConnectionSettings(source);
+	        return new ConnectRequest(source);
 	    }
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.backendType = source["backendType"];
 	        this.url = source["url"];
 	        this.username = source["username"];
+	        this.password = source["password"];
 	        this.insecure = source["insecure"];
-	        this.password = source["password"];
+	        this.vmrunPath = source["vmrunPath"];
+	        this.vmDir = source["vmDir"];
 	    }
 	}
-
-}
-
-export namespace filetransfer {
-	
-	export class DownloadRequest {
-	    vmRef: string;
-	    username: string;
-	    password: string;
-	    guestPath: string;
-	    localPath: string;
+	export class ConnectionInfo {
+	    displayName: string;
+	    guestOps: boolean;
+	    inventory: boolean;
+	    toolsInstall: boolean;
 	
 	    static createFrom(source: any = {}) {
-	        return new DownloadRequest(source);
+	        return new ConnectionInfo(source);
 	    }
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.vmRef = source["vmRef"];
-	        this.username = source["username"];
-	        this.password = source["password"];
-	        this.guestPath = source["guestPath"];
-	        this.localPath = source["localPath"];
-	    }
-	}
-	export class UploadRequest {
-	    vmRef: string;
-	    username: string;
-	    password: string;
-	    localPath: string;
-	    guestPath: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new UploadRequest(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.vmRef = source["vmRef"];
-	        this.username = source["username"];
-	        this.password = source["password"];
-	        this.localPath = source["localPath"];
-	        this.guestPath = source["guestPath"];
-	    }
-	}
-
-}
-
-export namespace guestexec {
-	
-	export class RunRequest {
-	    vmRef: string;
-	    username: string;
-	    password: string;
-	    command: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new RunRequest(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.vmRef = source["vmRef"];
-	        this.username = source["username"];
-	        this.password = source["password"];
-	        this.command = source["command"];
-	    }
-	}
-
-}
-
-export namespace inventory {
-	
-	export class DatastoreInfo {
-	    ref: string;
-	    name: string;
-	    type: string;
-	    capacityGB: number;
-	    freeGB: number;
-	    accessible: boolean;
-	
-	    static createFrom(source: any = {}) {
-	        return new DatastoreInfo(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.ref = source["ref"];
-	        this.name = source["name"];
-	        this.type = source["type"];
-	        this.capacityGB = source["capacityGB"];
-	        this.freeGB = source["freeGB"];
-	        this.accessible = source["accessible"];
-	    }
-	}
-	export class HostInfo {
-	    ref: string;
-	    name: string;
-	    connectionState: string;
-	    powerState: string;
-	    totalCPUMHz: number;
-	    usedCPUMHz: number;
-	    totalMemoryMB: number;
-	    usedMemoryMB: number;
-	    vmCount: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new HostInfo(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.ref = source["ref"];
-	        this.name = source["name"];
-	        this.connectionState = source["connectionState"];
-	        this.powerState = source["powerState"];
-	        this.totalCPUMHz = source["totalCPUMHz"];
-	        this.usedCPUMHz = source["usedCPUMHz"];
-	        this.totalMemoryMB = source["totalMemoryMB"];
-	        this.usedMemoryMB = source["usedMemoryMB"];
-	        this.vmCount = source["vmCount"];
+	        this.displayName = source["displayName"];
+	        this.guestOps = source["guestOps"];
+	        this.inventory = source["inventory"];
+	        this.toolsInstall = source["toolsInstall"];
 	    }
 	}
 
@@ -197,36 +98,9 @@ export namespace jobs {
 
 }
 
-export namespace packetcapture {
+export namespace manager {
 	
-	export class CaptureRequest {
-	    vmRef: string;
-	    username: string;
-	    password: string;
-	    interface: string;
-	    duration: number;
-	    localPath: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new CaptureRequest(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.vmRef = source["vmRef"];
-	        this.username = source["username"];
-	        this.password = source["password"];
-	        this.interface = source["interface"];
-	        this.duration = source["duration"];
-	        this.localPath = source["localPath"];
-	    }
-	}
-
-}
-
-export namespace snapshots {
-	
-	export class CreateRequest {
+	export class CreateSnapshotRequest {
 	    vmRef: string;
 	    name: string;
 	    description: string;
@@ -234,7 +108,7 @@ export namespace snapshots {
 	    quiesce: boolean;
 	
 	    static createFrom(source: any = {}) {
-	        return new CreateRequest(source);
+	        return new CreateSnapshotRequest(source);
 	    }
 	
 	    constructor(source: any = {}) {
@@ -244,6 +118,114 @@ export namespace snapshots {
 	        this.description = source["description"];
 	        this.memory = source["memory"];
 	        this.quiesce = source["quiesce"];
+	    }
+	}
+	export class DatastoreInfo {
+	    ref: string;
+	    name: string;
+	    type: string;
+	    capacityGB: number;
+	    freeGB: number;
+	    accessible: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new DatastoreInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ref = source["ref"];
+	        this.name = source["name"];
+	        this.type = source["type"];
+	        this.capacityGB = source["capacityGB"];
+	        this.freeGB = source["freeGB"];
+	        this.accessible = source["accessible"];
+	    }
+	}
+	export class DeployRequest {
+	    vmRef: string;
+	    username: string;
+	    password: string;
+	    localPath: string;
+	    runCommand: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DeployRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.vmRef = source["vmRef"];
+	        this.username = source["username"];
+	        this.password = source["password"];
+	        this.localPath = source["localPath"];
+	        this.runCommand = source["runCommand"];
+	    }
+	}
+	export class DownloadRequest {
+	    vmRef: string;
+	    username: string;
+	    password: string;
+	    guestPath: string;
+	    localPath: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DownloadRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.vmRef = source["vmRef"];
+	        this.username = source["username"];
+	        this.password = source["password"];
+	        this.guestPath = source["guestPath"];
+	        this.localPath = source["localPath"];
+	    }
+	}
+	export class HostInfo {
+	    ref: string;
+	    name: string;
+	    connectionState: string;
+	    powerState: string;
+	    totalCPUMHz: number;
+	    usedCPUMHz: number;
+	    totalMemoryMB: number;
+	    usedMemoryMB: number;
+	    vmCount: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new HostInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ref = source["ref"];
+	        this.name = source["name"];
+	        this.connectionState = source["connectionState"];
+	        this.powerState = source["powerState"];
+	        this.totalCPUMHz = source["totalCPUMHz"];
+	        this.usedCPUMHz = source["usedCPUMHz"];
+	        this.totalMemoryMB = source["totalMemoryMB"];
+	        this.usedMemoryMB = source["usedMemoryMB"];
+	        this.vmCount = source["vmCount"];
+	    }
+	}
+	export class RunRequest {
+	    vmRef: string;
+	    username: string;
+	    password: string;
+	    command: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new RunRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.vmRef = source["vmRef"];
+	        this.username = source["username"];
+	        this.password = source["password"];
+	        this.command = source["command"];
 	    }
 	}
 	export class SnapshotInfo {
@@ -287,11 +269,26 @@ export namespace snapshots {
 		    return a;
 		}
 	}
-
-}
-
-export namespace vminfo {
+	export class UploadRequest {
+	    vmRef: string;
+	    username: string;
+	    password: string;
+	    localPath: string;
+	    guestPath: string;
 	
+	    static createFrom(source: any = {}) {
+	        return new UploadRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.vmRef = source["vmRef"];
+	        this.username = source["username"];
+	        this.password = source["password"];
+	        this.localPath = source["localPath"];
+	        this.guestPath = source["guestPath"];
+	    }
+	}
 	export class VMInfo {
 	    ref: string;
 	    name: string;

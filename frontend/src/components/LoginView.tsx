@@ -5,41 +5,45 @@ import {
     SaveConnectionSettings,
     ClearConnectionSettings,
 } from '../../wailsjs/go/main/App';
+import { config } from '../../wailsjs/go/models';
 
 interface Props {
-    onConnected: (host: string) => void;
+    onConnected: (info: config.ConnectionInfo) => void;
 }
 
 export default function LoginView({ onConnected }: Props) {
+    const [backendType, setBackendType] = useState<'vcenter' | 'workstation'>('vcenter');
     const [url, setUrl]           = useState('https://');
     const [username, setUsername] = useState('');
     const [password, setPassword] = useState('');
     const [insecure, setInsecure] = useState(false);
-    const [remember, setRemember] = useState(false);
+    const [vmDir, setVmDir]       = useState('');
+    const [remember, setRemember] = useState(true);
     const [loading, setLoading]   = useState(false);
     const [error, setError]       = useState('');
 
     // Pre-populate fields from saved settings on mount.
-    // Password comes from the OS keyring (if available), never a file.
     useEffect(() => {
         LoadConnectionSettings().then(s => {
-            if (s.url) {
+            if (!s.backendType) return;
+            setBackendType(s.backendType as 'vcenter' | 'workstation');
+            if (s.backendType === 'vcenter' && s.url) {
                 setUrl(s.url);
                 setUsername(s.username ?? '');
                 setInsecure(s.insecure ?? false);
                 setRemember(true);
-            }
-            if (s.password) {
-                setPassword(s.password);
+                if (s.password) setPassword(s.password);
+            } else if (s.backendType === 'workstation') {
+                if (s.vmDir) setVmDir(s.vmDir);
+                setRemember(true);
             }
         });
     }, []);
 
     async function handleRememberToggle(checked: boolean) {
         setRemember(checked);
-        if (!checked && username) {
-            // User explicitly turned off "Remember" — clear stored settings
-            await ClearConnectionSettings(username);
+        if (!checked) {
+            await ClearConnectionSettings();
         }
     }
 
@@ -47,83 +51,127 @@ export default function LoginView({ onConnected }: Props) {
         e.preventDefault();
         setError('');
         setLoading(true);
+
+        const req: config.ConnectRequest = config.ConnectRequest.createFrom({
+            backendType,
+            url,
+            username,
+            password,
+            insecure,
+            vmrunPath: '',
+            vmDir,
+        });
+
+        let info: config.ConnectionInfo;
         try {
-            await Connect(url, username, password, insecure);
+            info = await Connect(req);
         } catch (err: any) {
             setError(String(err));
             setLoading(false);
             return;
         }
 
-        // Save settings after a confirmed successful connect.
-        // Errors here (e.g. keyring unavailable) are non-fatal — login still proceeds.
         if (remember) {
             try {
-                await SaveConnectionSettings(url, username, password, insecure);
+                await SaveConnectionSettings(req);
             } catch {
                 // intentionally ignored
             }
         }
 
         setLoading(false);
-        onConnected(new URL(url).host);
+        onConnected(info);
     }
 
     return (
         <div className="login-backdrop">
             <div className="login-card">
-                <h1 className="login-title">manosphere</h1>
-                <p className="login-subtitle">Connect to vCenter</p>
+                <h1 className="login-title">xman</h1>
+
+                <div className="tab-bar" style={{margin: '0 -2.5rem 0.5rem', padding: '0 2.5rem', justifyContent: 'center'}}>
+                    <button
+                        type="button"
+                        className={`tab ${backendType === 'vcenter' ? 'tab--active' : ''}`}
+                        onClick={() => setBackendType('vcenter')}
+                    >
+                        vCenter
+                    </button>
+                    <button
+                        type="button"
+                        className={`tab ${backendType === 'workstation' ? 'tab--active' : ''}`}
+                        onClick={() => setBackendType('workstation')}
+                    >
+                        Workstation
+                    </button>
+                </div>
 
                 <form onSubmit={handleSubmit} className="login-form">
-                    <div className="field">
-                        <label htmlFor="url">vCenter URL</label>
-                        <input
-                            id="url"
-                            type="url"
-                            value={url}
-                            onChange={e => setUrl(e.target.value)}
-                            placeholder="https://vcenter.example.com"
-                            required
-                            autoFocus
-                        />
-                    </div>
+                    {backendType === 'vcenter' && <>
+                        <div className="field">
+                            <label htmlFor="url">vCenter URL</label>
+                            <input
+                                id="url"
+                                type="url"
+                                value={url}
+                                onChange={e => setUrl(e.target.value)}
+                                placeholder="https://vcenter.example.com"
+                                required
+                                autoFocus
+                            />
+                        </div>
 
-                    <div className="field">
-                        <label htmlFor="username">Username</label>
-                        <input
-                            id="username"
-                            type="text"
-                            value={username}
-                            onChange={e => setUsername(e.target.value)}
-                            placeholder="administrator@vsphere.local"
-                            required
-                            autoComplete="username"
-                        />
-                    </div>
+                        <div className="field">
+                            <label htmlFor="username">Username</label>
+                            <input
+                                id="username"
+                                type="text"
+                                value={username}
+                                onChange={e => setUsername(e.target.value)}
+                                placeholder="administrator@vsphere.local"
+                                required
+                                autoComplete="username"
+                            />
+                        </div>
 
-                    <div className="field">
-                        <label htmlFor="password">Password</label>
-                        <input
-                            id="password"
-                            type="password"
-                            value={password}
-                            onChange={e => setPassword(e.target.value)}
-                            required
-                            autoComplete="current-password"
-                        />
-                    </div>
+                        <div className="field">
+                            <label htmlFor="password">Password</label>
+                            <input
+                                id="password"
+                                type="password"
+                                value={password}
+                                onChange={e => setPassword(e.target.value)}
+                                required
+                                autoComplete="current-password"
+                            />
+                        </div>
+
+                        <div className="checkbox-group">
+                            <label className="checkbox-row">
+                                <input
+                                    type="checkbox"
+                                    checked={insecure}
+                                    onChange={e => setInsecure(e.target.checked)}
+                                />
+                                <span> Ignore self-signed certificate </span>
+                            </label>
+                        </div>
+                    </>}
+
+                    {backendType === 'workstation' && (
+                        <div className="field">
+                            <label htmlFor="vmDir">VM folder (optional)</label>
+                            <input
+                                id="vmDir"
+                                type="text"
+                                value={vmDir}
+                                onChange={e => setVmDir(e.target.value)}
+                                placeholder="Leave blank to use default location"
+                                autoFocus
+                            />
+                        </div>
+                    )}
 
                     <div className="checkbox-group">
-                        <label className="checkbox-row">
-                            <input
-                                type="checkbox"
-                                checked={insecure}
-                                onChange={e => setInsecure(e.target.checked)}
-                            />
-                            <span>Skip TLS verification (self-signed certificate)</span>
-                        </label>
-
                         <label className="checkbox-row">
                             <input
                                 type="checkbox"

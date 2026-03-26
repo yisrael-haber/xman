@@ -1,11 +1,11 @@
-import { vminfo } from '../../../../wailsjs/go/models';
+import { manager } from '../../../../wailsjs/go/models';
 
 interface Props {
-    vms: vminfo.VMInfo[];
-    selected: vminfo.VMInfo | null;
+    vms: manager.VMInfo[];
+    selected: manager.VMInfo | null;
     loading: boolean;
     error: string;
-    onSelect: (vm: vminfo.VMInfo) => void;
+    onSelect: (vm: manager.VMInfo) => void;
     onRefresh: () => void;
 }
 

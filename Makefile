@@ -1,6 +1,6 @@
 WAILS    := $(HOME)/go/bin/wails
 VCSIM    := ./build/bin/vcsim
-VCSIM_PID := /tmp/manosphere-vcsim.pid
+VCSIM_PID := /tmp/xman-vcsim.pid
 
 .PHONY: dev build build-windows deploy-windows clean tidy vet test vcsim-build vcsim vcsim-bg vcsim-stop doctor help
 
@@ -22,7 +22,7 @@ build-windows:
 
 ## deploy-windows: build Windows .exe and copy to Windows desktop
 deploy-windows: build-windows
-	cp ./build/bin/manosphere.exe /mnt/c/Users/yisra/Desktop/
+	cp ./build/bin/xman.exe /mnt/c/Users/yisra/Desktop/
 
 ## clean: remove build output
 clean:

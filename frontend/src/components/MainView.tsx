@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Disconnect } from '../../wailsjs/go/main/App';
+import { config } from '../../wailsjs/go/models';
 import Sidebar, { FeatureID } from './Sidebar';
 import JobsBar from './JobsBar';
 import VMPanel from './features/vms/VMPanel';
@@ -7,11 +8,11 @@ import InventoryPanel from './features/inventory/InventoryPanel';
 import { useJobs } from '../hooks/useJobs';
 
 interface Props {
-    host: string;
+    info: config.ConnectionInfo;
     onDisconnect: () => void;
 }
 
-export default function MainView({ host, onDisconnect }: Props) {
+export default function MainView({ info, onDisconnect }: Props) {
     const [activeFeature, setActiveFeature] = useState<FeatureID>('vms');
     const { jobs, trackJob, dismiss } = useJobs();
 
@@ -23,21 +24,21 @@ export default function MainView({ host, onDisconnect }: Props) {
     return (
         <div className="main-layout">
             <header className="main-header">
-                <span className="main-header-title">manosphere</span>
+                <span className="main-header-title">xman</span>
                 <div className="main-header-right">
-                    <span className="connected-host">⬤ {host}</span>
+                    <span className="connected-host">⬤ {info.displayName}</span>
                     <button className="disconnect-btn" onClick={handleDisconnect}>Disconnect</button>
                 </div>
             </header>
 
             <div className="app-body">
-                <Sidebar active={activeFeature} onChange={setActiveFeature} />
+                <Sidebar active={activeFeature} onChange={setActiveFeature} showInventory={info.inventory} />
 
                 <div className="feature-content">
                     {activeFeature === 'vms' && (
-                        <VMPanel onJobStarted={trackJob} />
+                        <VMPanel onJobStarted={trackJob} toolsInstall={info.toolsInstall} />
                     )}
-                    {activeFeature === 'inventory' && (
+                    {activeFeature === 'inventory' && info.inventory && (
                         <InventoryPanel />
                     )}
                 </div>

@@ -1,30 +1,31 @@
 import { useState, useEffect } from 'react';
-import { vminfo } from '../../../../wailsjs/go/models';
-import { VMList } from '../../../../wailsjs/go/vminfo/Binding';
+import { manager } from '../../../../wailsjs/go/models';
+import { VMList } from '../../../../wailsjs/go/manager/Manager';
 import VMBrowser from './VMBrowser';
 import VMInfoTab from './VMInfoTab';
 import FileTransferTab from './FileTransferTab';
-import PacketCaptureTab from './PacketCaptureTab';
 import SnapshotsTab from './SnapshotsTab';
 import GuestExecTab from './GuestExecTab';
+import DeployTab from './DeployTab';
 
-type TabID = 'info' | 'filetransfer' | 'capture' | 'snapshots' | 'exec';
+type TabID = 'info' | 'filetransfer' | 'snapshots' | 'exec' | 'deploy';
 
 const TABS: { id: TabID; label: string }[] = [
     { id: 'info',         label: 'VM Info'         },
     { id: 'snapshots',    label: 'Snapshots'        },
     { id: 'exec',         label: 'Run Command'      },
     { id: 'filetransfer', label: 'File Transfer'    },
-    { id: 'capture',      label: 'Packet Capture'   },
+    { id: 'deploy',       label: 'Deploy Installer' },
 ];
 
 interface Props {
     onJobStarted: (id: string) => void;
+    toolsInstall: boolean;
 }
 
-export default function VMPanel({ onJobStarted }: Props) {
-    const [vms,      setVms]      = useState<vminfo.VMInfo[]>([]);
-    const [selected, setSelected] = useState<vminfo.VMInfo | null>(null);
+export default function VMPanel({ onJobStarted, toolsInstall }: Props) {
+    const [vms,      setVms]      = useState<manager.VMInfo[]>([]);
+    const [selected, setSelected] = useState<manager.VMInfo | null>(null);
     const [loading,  setLoading]  = useState(false);
     const [error,    setError]    = useState('');
     const [activeTab, setActiveTab] = useState<TabID>('info');
@@ -77,7 +78,7 @@ export default function VMPanel({ onJobStarted }: Props) {
 
                         <div className="tab-content">
                             {activeTab === 'info' && (
-                                <VMInfoTab vm={selected} onRefresh={loadVMs} />
+                                <VMInfoTab vm={selected} onRefresh={loadVMs} onJobStarted={onJobStarted} toolsInstall={toolsInstall} />
                             )}
                             {activeTab === 'snapshots' && (
                                 <SnapshotsTab vm={selected} onJobStarted={onJobStarted} />
@@ -88,8 +89,8 @@ export default function VMPanel({ onJobStarted }: Props) {
                             {activeTab === 'filetransfer' && (
                                 <FileTransferTab vm={selected} onJobStarted={onJobStarted} />
                             )}
-                            {activeTab === 'capture' && (
-                                <PacketCaptureTab vm={selected} onJobStarted={onJobStarted} />
+                            {activeTab === 'deploy' && (
+                                <DeployTab vm={selected} onJobStarted={onJobStarted} />
                             )}
                         </div>
                     </>

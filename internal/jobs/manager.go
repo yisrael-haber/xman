@@ -24,6 +24,17 @@ func NewManager(ctx context.Context) *Manager {
 	}
 }
 
+// SetContext provides the Wails runtime context after startup.
+// Also initialises the job map if this is the first call.
+func (m *Manager) SetContext(ctx context.Context) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ctx = ctx
+	if m.jobs == nil {
+		m.jobs = make(map[string]*Job)
+	}
+}
+
 // Submit starts a new job and returns its ID immediately.
 // The work function receives a cancellable context and an emit function for progress.
 func (m *Manager) Submit(feature, label string, fn func(ctx context.Context, emit EmitFn) error) string {

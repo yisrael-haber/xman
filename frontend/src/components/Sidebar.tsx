@@ -9,6 +9,7 @@ interface NavItem {
 interface Props {
     active: FeatureID;
     onChange: (id: FeatureID) => void;
+    showInventory: boolean;
 }
 
 const VMsIcon = () => (
@@ -32,10 +33,11 @@ const NAV_ITEMS: NavItem[] = [
     { id: 'inventory', label: 'Hosts & Datastores',  icon: <InventoryIcon /> },
 ];
 
-export default function Sidebar({ active, onChange }: Props) {
+export default function Sidebar({ active, onChange, showInventory }: Props) {
+    const items = NAV_ITEMS.filter(item => item.id !== 'inventory' || showInventory);
     return (
         <nav className="sidebar">
-            {NAV_ITEMS.map(item => (
+            {items.map(item => (
                 <button
                     key={item.id}
                     className={`nav-item ${active === item.id ? 'nav-item--active' : ''}`}

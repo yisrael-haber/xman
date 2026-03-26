@@ -1,10 +1,12 @@
 import { useState } from 'react';
-import { vminfo } from '../../../../wailsjs/go/models';
-import { VMPowerOn, VMPowerOff, VMReset, VMSuspend } from '../../../../wailsjs/go/vminfo/Binding';
+import { manager } from '../../../../wailsjs/go/models';
+import { VMPowerOn, VMPowerOff, VMReset, VMSuspend, VMInstallTools } from '../../../../wailsjs/go/manager/Manager';
 
 interface Props {
-    vm: vminfo.VMInfo;
+    vm: manager.VMInfo;
     onRefresh: () => void;
+    onJobStarted: (id: string) => void;
+    toolsInstall: boolean;
 }
 
 const TOOLS_LABELS: Record<string, { label: string; ok: boolean }> = {
@@ -16,14 +18,20 @@ const TOOLS_LABELS: Record<string, { label: string; ok: boolean }> = {
 
 type PowerAction = 'on' | 'off' | 'reset' | 'suspend';
 
-export default function VMInfoTab({ vm, onRefresh }: Props) {
+export default function VMInfoTab({ vm, onRefresh, onJobStarted, toolsInstall }: Props) {
     const [busy, setBusy] = useState<PowerAction | null>(null);
+    const [toolsBusy, setToolsBusy] = useState(false);
     const [error, setError] = useState('');
 
     const tools = TOOLS_LABELS[vm.toolsStatus] ?? { label: vm.toolsStatus, ok: false };
     const isOn = vm.powerState === 'poweredOn';
     const isOff = vm.powerState === 'poweredOff';
     const isSuspended = vm.powerState === 'suspended';
+
+    const isWindowsGuest = vm.guestOS.toLowerCase().includes('win');
+    const canInstallTools = toolsInstall && isWindowsGuest && isOn &&
+        (vm.toolsStatus === 'toolsNotInstalled' || vm.toolsStatus === 'toolsOld' || vm.toolsStatus === 'toolsNotRunning');
+    const toolsButtonLabel = vm.toolsStatus === 'toolsNotInstalled' ? 'Install VMware Tools' : 'Upgrade VMware Tools';
 
     async function runAction(action: PowerAction, fn: () => Promise<void>) {
         setError('');
@@ -35,6 +43,19 @@ export default function VMInfoTab({ vm, onRefresh }: Props) {
             setError(String(e));
         } finally {
             setBusy(null);
+        }
+    }
+
+    async function handleInstallTools() {
+        setError('');
+        setToolsBusy(true);
+        try {
+            const jobId = await VMInstallTools(vm.ref);
+            onJobStarted(jobId);
+        } catch (e: any) {
+            setError(String(e));
+        } finally {
+            setToolsBusy(false);
         }
     }
 
@@ -76,6 +97,16 @@ export default function VMInfoTab({ vm, onRefresh }: Props) {
                             <span className={`badge badge--${tools.ok ? 'green' : 'red'}`}>
                                 {tools.label}
                             </span>
+                            {canInstallTools && (
+                                <button
+                                    className="btn-secondary"
+                                    disabled={toolsBusy}
+                                    onClick={handleInstallTools}
+                                    style={{ marginLeft: '0.5rem' }}
+                                >
+                                    {toolsBusy ? 'Submitting…' : toolsButtonLabel}
+                                </button>
+                            )}
                         </td>
                     </tr>
                     <tr>

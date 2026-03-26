@@ -1,10 +1,10 @@
 import { useState } from 'react';
-import { vminfo } from '../../../../wailsjs/go/models';
-import { Upload, Download } from '../../../../wailsjs/go/filetransfer/Binding';
+import { manager } from '../../../../wailsjs/go/models';
+import { Upload, Download } from '../../../../wailsjs/go/manager/Manager';
 import { OpenFileDialog, SaveFileDialog } from '../../../../wailsjs/go/main/App';
 
 interface Props {
-    vm: vminfo.VMInfo;
+    vm: manager.VMInfo;
     onJobStarted: (id: string) => void;
 }
 

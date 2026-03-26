@@ -1,4 +1,4 @@
-# manosphere
+# xman
 
 Using govmomi and a native UI to provide simple management of day-to-day tasks with VMware.
 
@@ -73,7 +73,7 @@ If `$DISPLAY` is empty, WSLg is not running. Ensure you are on Windows 11 and WS
 ```bash
 # Clone the repository
 git clone <repo-url>
-cd manosphere
+cd xman
 
 # Install frontend dependencies
 cd frontend && npm install && cd ..
@@ -91,7 +91,7 @@ wails build -tags webkit2_41
 ## Project Structure
 
 ```
-manosphere/
+xman/
 ├── app.go                    # Wails entry point — wires features together
 ├── main.go
 ├── internal/

@@ -9,31 +9,20 @@ import (
 	"github.com/zalando/go-keyring"
 )
 
-const keyringSvc = "manosphere"
+const keyringSvc = "xman"
 
-// ConnectionSettings holds all fields needed to reconnect.
-// Password is loaded from the OS keyring, never written to disk.
-type ConnectionSettings struct {
-	URL      string `json:"url"`
-	Username string `json:"username"`
-	Insecure bool   `json:"insecure"`
-	Password string `json:"password,omitempty"` // populated from keyring, not the JSON file
-}
-
-// configPath returns the OS-appropriate path for the settings file:
-//   - Linux/WSL2: ~/.config/manosphere/connection.json
-//   - Windows:    %AppData%\manosphere\connection.json
-//   - macOS:      ~/Library/Application Support/manosphere/connection.json
+// configPath returns the OS-appropriate path for the settings file.
 func configPath() (string, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "manosphere", "connection.json"), nil
+	return filepath.Join(dir, "xman", "connection.json"), nil
 }
 
-// SaveConnection writes URL/username/insecure to disk and the password to the OS keyring.
-func SaveConnection(s ConnectionSettings) error {
+// SaveConnection writes a ConnectRequest to disk.
+// For vCenter, the password is stored in the OS keyring rather than the file.
+func SaveConnection(req ConnectRequest) error {
 	path, err := configPath()
 	if err != nil {
 		return err
@@ -42,12 +31,10 @@ func SaveConnection(s ConnectionSettings) error {
 		return err
 	}
 
-	// Write non-sensitive fields to JSON — omit password field entirely
-	data, err := json.MarshalIndent(struct {
-		URL      string `json:"url"`
-		Username string `json:"username"`
-		Insecure bool   `json:"insecure"`
-	}{s.URL, s.Username, s.Insecure}, "", "  ")
+	// Strip the password before writing to disk
+	safe := req
+	safe.Password = ""
+	data, err := json.MarshalIndent(safe, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -55,53 +42,63 @@ func SaveConnection(s ConnectionSettings) error {
 		return err
 	}
 
-	// Best-effort: store password in the OS keyring.
-	// Silently ignore keyring errors (e.g. no daemon running in WSL2) —
-	// the user will just need to re-enter their password next time.
-	if s.Password != "" {
-		_ = keyring.Set(keyringSvc, s.Username, s.Password)
+	// For vCenter, store the password in the OS keyring keyed by username.
+	if req.BackendType == "vcenter" && req.Password != "" && req.Username != "" {
+		_ = keyring.Set(keyringSvc, req.Username, req.Password)
 	}
 	return nil
 }
 
-// LoadConnection reads the JSON settings and fetches the password from the keyring.
-// Returns empty defaults (no error) if no settings have been saved yet.
-func LoadConnection() (ConnectionSettings, error) {
+// LoadConnection reads the saved ConnectRequest from disk and restores the
+// vCenter password from the OS keyring if available.
+// Returns an empty ConnectRequest (no error) if nothing has been saved yet.
+func LoadConnection() (ConnectRequest, error) {
 	path, err := configPath()
 	if err != nil {
-		return ConnectionSettings{}, err
+		return ConnectRequest{}, err
 	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return ConnectionSettings{}, nil
+			return ConnectRequest{}, nil
 		}
-		return ConnectionSettings{}, err
+		return ConnectRequest{}, err
 	}
 
-	var s ConnectionSettings
-	if err := json.Unmarshal(data, &s); err != nil {
-		return ConnectionSettings{}, err
+	var req ConnectRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		return ConnectRequest{}, err
 	}
 
-	// Best-effort: fetch password from keyring — silently ignore if not available
-	if s.Username != "" {
-		if pw, err := keyring.Get(keyringSvc, s.Username); err == nil {
-			s.Password = pw
+	// Migrate settings saved before BackendType was introduced
+	if req.BackendType == "" && req.URL != "" {
+		req.BackendType = "vcenter"
+	}
+
+	// Restore vCenter password from keyring (best-effort)
+	if req.BackendType == "vcenter" && req.Username != "" {
+		if pw, err := keyring.Get(keyringSvc, req.Username); err == nil {
+			req.Password = pw
 		}
 	}
 
-	return s, nil
+	return req, nil
 }
 
-// DeleteConnection removes saved settings from disk and the password from the keyring.
-func DeleteConnection(username string) error {
+// ClearConnection removes the saved settings file and the keyring entry.
+func ClearConnection() error {
 	path, err := configPath()
 	if err != nil {
 		return err
 	}
+
+	// Load first to get the username for keyring cleanup
+	saved, _ := LoadConnection()
+	if saved.BackendType == "vcenter" && saved.Username != "" {
+		_ = keyring.Delete(keyringSvc, saved.Username)
+	}
+
 	_ = os.Remove(path)
-	_ = keyring.Delete(keyringSvc, username)
 	return nil
 }

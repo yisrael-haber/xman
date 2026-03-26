@@ -1,17 +1,18 @@
 import { useState, useEffect } from 'react';
-import { ConnectionStatus } from '../wailsjs/go/main/App';
+import { ConnectionInfo } from '../wailsjs/go/main/App';
+import { config } from '../wailsjs/go/models';
 import LoginView from './components/LoginView';
 import MainView from './components/MainView';
 import './App.css';
 
 export default function App() {
-    const [connectedHost, setConnectedHost] = useState<string | null>(null);
+    const [connInfo, setConnInfo] = useState<config.ConnectionInfo | null>(null);
     const [checking, setChecking] = useState(true);
 
-    // On startup, check if a session is already active (e.g. after hot reload)
+    // On startup, check if a backend is already active (e.g. after hot reload)
     useEffect(() => {
-        ConnectionStatus()
-            .then(host => setConnectedHost(host || null))
+        ConnectionInfo()
+            .then(info => setConnInfo(info.displayName ? info : null))
             .finally(() => setChecking(false));
     }, []);
 
@@ -19,9 +20,9 @@ export default function App() {
         return <div className="splash">Connecting...</div>;
     }
 
-    if (connectedHost) {
-        return <MainView host={connectedHost} onDisconnect={() => setConnectedHost(null)} />;
+    if (connInfo) {
+        return <MainView info={connInfo} onDisconnect={() => setConnInfo(null)} />;
     }
 
-    return <LoginView onConnected={setConnectedHost} />;
+    return <LoginView onConnected={setConnInfo} />;
 }

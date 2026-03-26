@@ -2,124 +2,104 @@ package main
 
 import (
 	"context"
+	"fmt"
 
-	"manosphere/internal/config"
-	"manosphere/internal/features/filetransfer"
-	"manosphere/internal/features/guestexec"
-	"manosphere/internal/features/inventory"
-	"manosphere/internal/features/packetcapture"
-	"manosphere/internal/features/snapshots"
-	"manosphere/internal/features/vminfo"
-	"manosphere/internal/jobs"
-	"manosphere/internal/vcenter"
+	"xman/internal/config"
+	"xman/internal/jobs"
+	"xman/internal/manager"
+	"xman/internal/vcenter"
+	"xman/internal/workstation"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// App is the top-level Wails application struct.
-// It wires together the vCenter session, job manager, and feature bindings.
-// Business logic lives in the feature packages, not here.
+// App wires together the Manager, job system, and connection lifecycle.
+// All VM/feature operations live on Manager; connection, settings, and
+// file dialogs live here.
 type App struct {
 	ctx     context.Context
-	session *vcenter.Session
-
-	// Feature bindings — each is registered with Wails and auto-generates
-	// TypeScript bindings for the frontend.
-	VMInfo        *vminfo.Binding
-	FileTransfer  *filetransfer.Binding
-	PacketCapture *packetcapture.Binding
-	Snapshots     *snapshots.Binding
-	GuestExec     *guestexec.Binding
-	Inventory     *inventory.Binding
-	Jobs          *jobs.Manager
+	Manager *manager.Manager
+	Jobs    *jobs.Manager
 }
 
-// NewApp constructs the App and wires all features to the shared session.
+// NewApp constructs the App. The backend is nil until Connect is called.
 func NewApp() *App {
-	session := &vcenter.Session{}
-	jobManager := &jobs.Manager{} // context injected in startup
-
+	jobManager := jobs.NewManager(nil)
 	return &App{
-		session:       session,
-		VMInfo:        vminfo.NewBinding(session),
-		FileTransfer:  filetransfer.NewBinding(session, jobManager),
-		PacketCapture: packetcapture.NewBinding(session, jobManager),
-		Snapshots:     snapshots.NewBinding(session, jobManager),
-		GuestExec:     guestexec.NewBinding(session, jobManager),
-		Inventory:     inventory.NewBinding(session),
-		Jobs:          jobManager,
+		Manager: manager.New(jobManager),
+		Jobs:    jobManager,
 	}
 }
 
 // startup is called by Wails after the frontend is ready.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
-	*a.Jobs = *jobs.NewManager(ctx)
-	a.VMInfo.SetContext(ctx)
-	a.FileTransfer.SetContext(ctx)
-	a.PacketCapture.SetContext(ctx)
-	a.Snapshots.SetContext(ctx)
-	a.GuestExec.SetContext(ctx)
-	a.Inventory.SetContext(ctx)
+	a.Jobs.SetContext(ctx)
+	a.Manager.SetContext(ctx)
 }
 
 // shutdown is called by Wails when the application is closing.
 func (a *App) shutdown(ctx context.Context) {
-	_ = a.session.Disconnect(ctx)
+	_ = a.Manager.Disconnect(ctx)
 }
 
-// --- vCenter connection bindings ---
+// --- Connection ---
 
-func (a *App) Connect(url, username, password string, insecure bool) error {
-	return a.session.Connect(context.Background(), vcenter.ConnectParams{
-		URL:      url,
-		Username: username,
-		Password: password,
-		Insecure: insecure,
-	})
-}
+// Connect creates the appropriate backend based on req.BackendType and
+// installs it in the Manager. Returns ConnectionInfo on success.
+func (a *App) Connect(req config.ConnectRequest) (config.ConnectionInfo, error) {
+	var b manager.Backend
+	var err error
 
-func (a *App) Disconnect() error {
-	return a.session.Disconnect(context.Background())
-}
-
-func (a *App) ConnectionStatus() string {
-	if !a.session.IsConnected() {
-		return ""
+	switch req.BackendType {
+	case "vcenter":
+		b, err = vcenter.NewBackend(a.ctx, req.URL, req.Username, req.Password, req.Insecure)
+	case "workstation":
+		b, err = workstation.NewBackend(req.VmrunPath, req.VMDir)
+	default:
+		return config.ConnectionInfo{}, fmt.Errorf("unknown backend type %q", req.BackendType)
 	}
-	return a.session.Host()
+
+	if err != nil {
+		return config.ConnectionInfo{}, err
+	}
+
+	a.Manager.SetBackend(b)
+	return a.Manager.ConnectionInfo(), nil
 }
 
-// --- Settings bindings ---
-
-func (a *App) LoadConnectionSettings() config.ConnectionSettings {
-	s, _ := config.LoadConnection()
-	return s
+// Disconnect tears down the active backend.
+func (a *App) Disconnect() error {
+	return a.Manager.Disconnect(context.Background())
 }
 
-func (a *App) SaveConnectionSettings(url, username, password string, insecure bool) error {
-	return config.SaveConnection(config.ConnectionSettings{
-		URL:      url,
-		Username: username,
-		Password: password,
-		Insecure: insecure,
-	})
+// ConnectionInfo returns the current connection state and capabilities.
+// A zero-value (DisplayName == "") means not connected.
+func (a *App) ConnectionInfo() config.ConnectionInfo {
+	return a.Manager.ConnectionInfo()
 }
 
-func (a *App) ClearConnectionSettings(username string) error {
-	return config.DeleteConnection(username)
+// --- Settings ---
+
+func (a *App) LoadConnectionSettings() config.ConnectRequest {
+	req, _ := config.LoadConnection()
+	return req
 }
 
-// --- File dialog bindings ---
+func (a *App) SaveConnectionSettings(req config.ConnectRequest) error {
+	return config.SaveConnection(req)
+}
 
-// OpenFileDialog opens a native file picker and returns the selected path.
+func (a *App) ClearConnectionSettings() error {
+	return config.ClearConnection()
+}
+
+// --- File dialogs ---
+
 func (a *App) OpenFileDialog(title string) (string, error) {
-	return runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
-		Title: title,
-	})
+	return runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{Title: title})
 }
 
-// SaveFileDialog opens a native save dialog and returns the chosen path.
 func (a *App) SaveFileDialog(title, defaultFilename string) (string, error) {
 	return runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
 		Title:           title,

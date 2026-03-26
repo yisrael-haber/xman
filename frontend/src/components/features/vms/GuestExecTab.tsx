@@ -1,10 +1,10 @@
 import { useState, useRef, useEffect } from 'react';
-import { vminfo } from '../../../../wailsjs/go/models';
-import { GuestRun } from '../../../../wailsjs/go/guestexec/Binding';
+import { manager } from '../../../../wailsjs/go/models';
+import { GuestRun } from '../../../../wailsjs/go/manager/Manager';
 import { EventsOn, EventsOff } from '../../../../wailsjs/runtime/runtime';
 
 interface Props {
-    vm: vminfo.VMInfo;
+    vm: manager.VMInfo;
     onJobStarted: (id: string) => void;
 }
 

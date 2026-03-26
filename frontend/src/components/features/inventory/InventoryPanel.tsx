@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import { inventory } from '../../../../wailsjs/go/models';
-import { InventoryHosts, InventoryDatastores } from '../../../../wailsjs/go/inventory/Binding';
+import { manager } from '../../../../wailsjs/go/models';
+import { InventoryHosts, InventoryDatastores } from '../../../../wailsjs/go/manager/Manager';
 
 type TabID = 'hosts' | 'datastores';
 
@@ -17,8 +17,8 @@ function UsageBar({ used, total }: { used: number; total: number }) {
 
 export default function InventoryPanel() {
     const [tab, setTab]               = useState<TabID>('hosts');
-    const [hosts, setHosts]           = useState<inventory.HostInfo[]>([]);
-    const [datastores, setDatastores] = useState<inventory.DatastoreInfo[]>([]);
+    const [hosts, setHosts]           = useState<manager.HostInfo[]>([]);
+    const [datastores, setDatastores] = useState<manager.DatastoreInfo[]>([]);
     const [loading, setLoading]       = useState(false);
     const [error, setError]           = useState('');
 

@@ -1,15 +1,15 @@
 import { useState, useEffect, useCallback } from 'react';
-import { vminfo, snapshots } from '../../../../wailsjs/go/models';
-import { SnapshotList, SnapshotCreate, SnapshotRevert, SnapshotDelete } from '../../../../wailsjs/go/snapshots/Binding';
+import { manager } from '../../../../wailsjs/go/models';
+import { SnapshotList, SnapshotCreate, SnapshotRevert, SnapshotDelete } from '../../../../wailsjs/go/manager/Manager';
 import { EventsOn, EventsOff } from '../../../../wailsjs/runtime/runtime';
 
 interface Props {
-    vm: vminfo.VMInfo;
+    vm: manager.VMInfo;
     onJobStarted: (id: string) => void;
 }
 
 export default function SnapshotsTab({ vm, onJobStarted }: Props) {
-    const [snaps, setSnaps]       = useState<snapshots.SnapshotInfo[]>([]);
+    const [snaps, setSnaps]       = useState<manager.SnapshotInfo[]>([]);
     const [loading, setLoading]   = useState(false);
     const [error, setError]       = useState('');
     const [newName, setNewName]   = useState('');

@@ -77,13 +77,6 @@ func (s *Session) Client() (*govmomi.Client, error) {
 	return s.client, nil
 }
 
-// IsConnected reports whether there is an active session.
-func (s *Session) IsConnected() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.client != nil
-}
-
 // Host returns the vCenter host of the current session, or empty string if not connected.
 func (s *Session) Host() string {
 	s.mu.RLock()
