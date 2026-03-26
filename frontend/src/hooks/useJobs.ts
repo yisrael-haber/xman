@@ -1,6 +1,12 @@
 import { useState, useCallback } from 'react';
 import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime';
 
+export interface LogEntry {
+    progress: number;
+    message: string;
+    timestamp: string;
+}
+
 export interface Job {
     id: string;
     feature: string;
@@ -9,6 +15,7 @@ export interface Job {
     progress: number;
     message: string;
     error?: string;
+    log: LogEntry[];
 }
 
 export function useJobs() {

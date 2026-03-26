@@ -1,7 +1,9 @@
 import { useState, useRef, useEffect } from 'react';
 import { manager } from '../../../../wailsjs/go/models';
-import { GuestRun } from '../../../../wailsjs/go/manager/Manager';
+import { GuestRun, SSHRun } from '../../../../wailsjs/go/manager/Manager';
 import { EventsOn, EventsOff } from '../../../../wailsjs/runtime/runtime';
+
+type Mode = 'vmware' | 'ssh';
 
 interface Props {
     vm: manager.VMInfo;
@@ -15,13 +17,19 @@ interface OutputEntry {
 }
 
 export default function GuestExecTab({ vm, onJobStarted }: Props) {
+    const [mode,     setMode]     = useState<Mode>('vmware');
     const [username, setUsername] = useState('');
     const [password, setPassword] = useState('');
+    const [sshHost,  setSshHost]  = useState(vm.ipAddress || '');
+    const [sshPort,  setSshPort]  = useState(22);
     const [command,  setCommand]  = useState('');
     const [history,  setHistory]  = useState<OutputEntry[]>([]);
     const [busy,     setBusy]     = useState(false);
     const [error,    setError]    = useState('');
     const outputRef = useRef<HTMLDivElement>(null);
+
+    // Keep SSH host in sync with the selected VM's IP.
+    useEffect(() => { setSshHost(vm.ipAddress || ''); }, [vm.ref]);
 
     useEffect(() => {
         if (outputRef.current) {
@@ -31,16 +39,6 @@ export default function GuestExecTab({ vm, onJobStarted }: Props) {
 
     const toolsOk = vm.toolsStatus === 'toolsOk' || vm.toolsStatus === 'toolsOld';
 
-    if (!toolsOk) {
-        return (
-            <div className="tab-body">
-                <div className="notice notice--warn">
-                    VMware Tools are not running on this VM. Guest command execution requires Tools to be installed and running.
-                </div>
-            </div>
-        );
-    }
-
     async function handleRun() {
         if (!command.trim()) return;
         setError('');
@@ -48,10 +46,15 @@ export default function GuestExecTab({ vm, onJobStarted }: Props) {
         const cmd = command.trim();
         const entry: OutputEntry = { command: cmd, output: '', status: 'running' };
         setHistory(prev => [...prev, entry]);
-        const idx = history.length; // index of this entry
+        const idx = history.length;
 
         try {
-            const id = await GuestRun({ vmRef: vm.ref, username, password, command: cmd });
+            let id: string;
+            if (mode === 'ssh') {
+                id = await SSHRun({ host: sshHost, port: sshPort, username, password, command: cmd });
+            } else {
+                id = await GuestRun({ vmRef: vm.ref, username, password, command: cmd });
+            }
             onJobStarted(id);
 
             const unsub = EventsOn(`job:${id}`, (job: any) => {
@@ -87,21 +90,54 @@ export default function GuestExecTab({ vm, onJobStarted }: Props) {
         }
     }
 
+    const notReady = mode === 'vmware' && !toolsOk;
+    const canRun   = !busy && !!command.trim() && !!username &&
+                     (mode === 'vmware' || (!!sshHost && sshPort > 0));
+
     return (
         <div className="tab-body" style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-            <div className="form-section">
+            <div className="form-section" style={{ alignSelf: 'center', width: '420px' }}>
+                <div className="mode-toggle" style={{ alignSelf: 'center' }}>
+                    <button className={`mode-btn ${mode === 'vmware' ? 'mode-btn--active' : ''}`}
+                        onClick={() => setMode('vmware')}>VMware</button>
+                    <button className={`mode-btn ${mode === 'ssh' ? 'mode-btn--active' : ''}`}
+                        onClick={() => setMode('ssh')}>SSH</button>
+                </div>
+
+                {mode === 'vmware' && !toolsOk && (
+                    <div className="notice notice--warn">
+                        VMware Tools are not running. Switch to SSH or start Tools to run commands.
+                    </div>
+                )}
+
                 <div className="cred-row">
                     <div className="field field--inline">
-                        <label>Guest user</label>
+                        <label>Username</label>
                         <input value={username} onChange={e => setUsername(e.target.value)}
                             placeholder="root" autoComplete="off" />
                     </div>
                     <div className="field field--inline">
-                        <label>Guest password</label>
+                        <label>Password</label>
                         <input type="password" value={password} onChange={e => setPassword(e.target.value)}
                             autoComplete="off" />
                     </div>
                 </div>
+
+                {mode === 'ssh' && (
+                    <div className="cred-row">
+                        <div className="field field--inline">
+                            <label>Host</label>
+                            <input value={sshHost} onChange={e => setSshHost(e.target.value)}
+                                placeholder="192.168.1.100" autoComplete="off" />
+                        </div>
+                        <div className="field field--inline field--narrow">
+                            <label>Port</label>
+                            <input type="number" value={sshPort}
+                                onChange={e => setSshPort(parseInt(e.target.value) || 22)}
+                                min={1} max={65535} />
+                        </div>
+                    </div>
+                )}
             </div>
 
             <div className="exec-output" ref={outputRef}>
@@ -133,10 +169,10 @@ export default function GuestExecTab({ vm, onJobStarted }: Props) {
                     onChange={e => setCommand(e.target.value)}
                     onKeyDown={handleKeyDown}
                     placeholder="command to run in guest"
-                    disabled={busy || !username}
+                    disabled={busy || notReady || !username}
                     autoComplete="off"
                 />
-                <button className="btn-primary" onClick={handleRun} disabled={busy || !command.trim() || !username}>
+                <button className="btn-primary" onClick={handleRun} disabled={!canRun || notReady}>
                     {busy ? 'Running…' : 'Run'}
                 </button>
             </div>

@@ -392,11 +392,11 @@ func (b *Backend) GuestRun(ctx context.Context, emit jobs.EmitFn, req manager.Ru
 	var outPath string
 	var spec types.GuestProgramSpec
 	if b.isWindowsGuest(ctx, req.VMRef) {
-		outPath = `C:\Windows\Temp\` + outName
+		outPath = `C:\Users\Public\` + outName
 		spec = types.GuestProgramSpec{
-			ProgramPath:      `C:\Windows\System32\cmd.exe`,
-			Arguments:        fmt.Sprintf("/c %s > %s 2>&1", req.Command, outPath),
-			WorkingDirectory: `C:\Windows\Temp`,
+			ProgramPath:      manager.WinPSExePath,
+			Arguments:        manager.WinPSCmdArgs(req.Command, outPath),
+			WorkingDirectory: `C:\Users\Public`,
 		}
 	} else {
 		outPath = "/tmp/" + outName
@@ -408,6 +408,7 @@ func (b *Backend) GuestRun(ctx context.Context, emit jobs.EmitFn, req manager.Ru
 	}
 
 	emit(10, "Executing command...")
+
 	pid, err := pm.StartProgram(ctx, auth, &spec)
 	if err != nil {
 		return fmt.Errorf("starting command: %w", err)
@@ -585,7 +586,19 @@ func (b *Backend) InstallTools(ctx context.Context, emit jobs.EmitFn, vmRef stri
 		return nil
 	}
 
-	emit(10, "Requesting VMware Tools installation from vSphere...")
+	// UpgradeTools requires a running guest agent. On a fresh VM with no tools
+	// installed it would create a task that blocks indefinitely. Mount the ISO
+	// directly and let the user run the installer.
+	if obj.Guest == nil || obj.Guest.ToolsStatus == types.VirtualMachineToolsStatusToolsNotInstalled {
+		emit(10, "Mounting VMware Tools ISO...")
+		if err := vm.MountToolsInstaller(ctx); err != nil {
+			return fmt.Errorf("mounting tools installer: %w", err)
+		}
+		emit(100, "VMware Tools ISO mounted in the guest CD-ROM. Run the installer from within the guest to complete installation.")
+		return nil
+	}
+
+	emit(10, "Requesting VMware Tools upgrade from vSphere...")
 	task, err := vm.UpgradeTools(ctx, "")
 	if err != nil {
 		emit(50, "Automatic upgrade unavailable — mounting VMware Tools ISO...")
@@ -601,167 +614,5 @@ func (b *Backend) InstallTools(ctx context.Context, emit jobs.EmitFn, vmRef stri
 		return fmt.Errorf("VMware Tools installation task failed: %w", err)
 	}
 	emit(100, "VMware Tools installed successfully.")
-	return nil
-}
-
-func (b *Backend) DeployAndRun(ctx context.Context, emit jobs.EmitFn, req manager.DeployRequest) error {
-	client, err := b.session.Client()
-	if err != nil {
-		return err
-	}
-
-	isWin := b.isWindowsGuest(ctx, req.VMRef)
-	filename := filepath.Base(req.LocalPath)
-	outName := fmt.Sprintf("deploy_out_%d.txt", time.Now().UnixNano())
-
-	var guestInstallerPath, guestOutPath string
-	if isWin {
-		guestInstallerPath = `C:\Windows\Temp\` + filename
-		guestOutPath = `C:\Windows\Temp\` + outName
-	} else {
-		guestInstallerPath = "/tmp/" + filename
-		guestOutPath = "/tmp/" + outName
-	}
-
-	ref := types.ManagedObjectReference{Type: "VirtualMachine", Value: req.VMRef}
-	ops := guest.NewOperationsManager(client.Client, ref)
-	auth := &types.NamePasswordAuthentication{Username: req.Username, Password: req.Password}
-
-	fm, err := ops.FileManager(ctx)
-	if err != nil {
-		return fmt.Errorf("getting guest file manager: %w", err)
-	}
-	pm, err := ops.ProcessManager(ctx)
-	if err != nil {
-		return fmt.Errorf("getting guest process manager: %w", err)
-	}
-
-	f, err := os.Open(req.LocalPath)
-	if err != nil {
-		return fmt.Errorf("opening installer: %w", err)
-	}
-	defer f.Close()
-	fi, err := f.Stat()
-	if err != nil {
-		return fmt.Errorf("stat installer: %w", err)
-	}
-
-	emit(5, fmt.Sprintf("Uploading %s to guest...", filename))
-	var fileAttrs types.BaseGuestFileAttributes
-	if isWin {
-		fileAttrs = &types.GuestWindowsFileAttributes{}
-	} else {
-		fileAttrs = &types.GuestPosixFileAttributes{}
-	}
-	rawURL, err := fm.InitiateFileTransferToGuest(ctx, auth, guestInstallerPath, fileAttrs, fi.Size(), true)
-	if err != nil {
-		return fmt.Errorf("initiating upload: %w", err)
-	}
-	transferURL, err := url.Parse(rawURL)
-	if err != nil {
-		return fmt.Errorf("parsing transfer URL: %w", err)
-	}
-	uploadParams := gsoap.DefaultUpload
-	uploadParams.ContentLength = fi.Size()
-	if err := client.Client.Upload(ctx, f, transferURL, &uploadParams); err != nil {
-		return fmt.Errorf("uploading installer: %w", err)
-	}
-
-	emit(30, "Upload complete. Starting installer...")
-	runCmd := req.RunCommand
-	if runCmd == "" {
-		runCmd = manager.DerivedRunCommand(isWin, guestInstallerPath)
-	}
-
-	var spec types.GuestProgramSpec
-	if isWin {
-		spec = types.GuestProgramSpec{
-			ProgramPath:      `C:\Windows\System32\cmd.exe`,
-			Arguments:        fmt.Sprintf("/c %s > %s 2>&1", runCmd, guestOutPath),
-			WorkingDirectory: `C:\Windows\Temp`,
-		}
-	} else {
-		spec = types.GuestProgramSpec{
-			ProgramPath:      "/bin/sh",
-			Arguments:        fmt.Sprintf("-c '%s' > %s 2>&1", runCmd, guestOutPath),
-			WorkingDirectory: "/tmp",
-		}
-	}
-
-	pid, err := pm.StartProgram(ctx, auth, &spec)
-	if err != nil {
-		return fmt.Errorf("starting installer: %w", err)
-	}
-
-	emit(40, "Installer running, waiting for completion...")
-	deadline := time.Now().Add(30 * time.Minute)
-	var exitCode int32 = -1
-	for {
-		select {
-		case <-ctx.Done():
-			_ = pm.TerminateProcess(ctx, auth, pid)
-			return ctx.Err()
-		default:
-		}
-		procs, err := pm.ListProcesses(ctx, auth, []int64{pid})
-		if err != nil {
-			return fmt.Errorf("checking installer status: %w", err)
-		}
-		if len(procs) > 0 && procs[0].ExitCode != -1 {
-			exitCode = procs[0].ExitCode
-			break
-		}
-		if time.Now().After(deadline) {
-			_ = pm.TerminateProcess(ctx, auth, pid)
-			return fmt.Errorf("timed out waiting for installer to finish")
-		}
-		emit(50, "Waiting for installer to finish...")
-		time.Sleep(2 * time.Second)
-	}
-
-	emit(80, "Retrieving installer output...")
-	output := ""
-	if fileInfo, err := fm.InitiateFileTransferFromGuest(ctx, auth, guestOutPath); err == nil {
-		if dlURL, err := url.Parse(fileInfo.Url); err == nil {
-			if tmpFile, err := os.CreateTemp("", "deploy_out_*.txt"); err == nil {
-				tmpPath := tmpFile.Name()
-				tmpFile.Close()
-				defer os.Remove(tmpPath)
-				if err := client.Client.DownloadFile(ctx, tmpPath, dlURL, nil); err == nil {
-					if data, err := os.ReadFile(tmpPath); err == nil {
-						output = strings.TrimSpace(string(data))
-						if len(output) > 16*1024 {
-							output = output[:16*1024] + "\n[output truncated]"
-						}
-					}
-				}
-			}
-		}
-	}
-
-	emit(95, "Cleaning up...")
-	_ = fm.DeleteFile(ctx, auth, guestInstallerPath)
-	_ = fm.DeleteFile(ctx, auth, guestOutPath)
-
-	switch exitCode {
-	case 0:
-		if output != "" {
-			emit(100, output)
-		} else {
-			emit(100, "Installer completed successfully.")
-		}
-	case 3010:
-		msg := "Installer completed successfully. A reboot is required to finish installation."
-		if output != "" {
-			msg += "\n\n" + output
-		}
-		emit(100, msg)
-	default:
-		errMsg := fmt.Sprintf("Installer exited with code %d.", exitCode)
-		if output != "" {
-			errMsg += "\n\n" + output
-		}
-		return fmt.Errorf("%s", errMsg)
-	}
 	return nil
 }

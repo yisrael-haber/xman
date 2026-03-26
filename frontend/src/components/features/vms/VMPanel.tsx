@@ -6,16 +6,13 @@ import VMInfoTab from './VMInfoTab';
 import FileTransferTab from './FileTransferTab';
 import SnapshotsTab from './SnapshotsTab';
 import GuestExecTab from './GuestExecTab';
-import DeployTab from './DeployTab';
-
-type TabID = 'info' | 'filetransfer' | 'snapshots' | 'exec' | 'deploy';
+type TabID = 'info' | 'filetransfer' | 'snapshots' | 'exec';
 
 const TABS: { id: TabID; label: string }[] = [
-    { id: 'info',         label: 'VM Info'         },
-    { id: 'snapshots',    label: 'Snapshots'        },
-    { id: 'exec',         label: 'Run Command'      },
-    { id: 'filetransfer', label: 'File Transfer'    },
-    { id: 'deploy',       label: 'Deploy Installer' },
+    { id: 'info',         label: 'VM Info'      },
+    { id: 'snapshots',    label: 'Snapshots'    },
+    { id: 'exec',         label: 'Run Command'  },
+    { id: 'filetransfer', label: 'File Transfer' },
 ];
 
 interface Props {
@@ -88,9 +85,6 @@ export default function VMPanel({ onJobStarted, toolsInstall }: Props) {
                             )}
                             {activeTab === 'filetransfer' && (
                                 <FileTransferTab vm={selected} onJobStarted={onJobStarted} />
-                            )}
-                            {activeTab === 'deploy' && (
-                                <DeployTab vm={selected} onJobStarted={onJobStarted} />
                             )}
                         </div>
                     </>

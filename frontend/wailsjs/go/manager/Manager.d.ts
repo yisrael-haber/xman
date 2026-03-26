@@ -16,6 +16,12 @@ export function InventoryDatastores():Promise<Array<manager.DatastoreInfo>>;
 
 export function InventoryHosts():Promise<Array<manager.HostInfo>>;
 
+export function SSHDownload(arg1:manager.SSHTransferRequest):Promise<string>;
+
+export function SSHRun(arg1:manager.SSHRunRequest):Promise<string>;
+
+export function SSHUpload(arg1:manager.SSHTransferRequest):Promise<string>;
+
 export function SetBackend(arg1:manager.Backend):Promise<void>;
 
 export function SetContext(arg1:context.Context):Promise<void>;
@@ -29,8 +35,6 @@ export function SnapshotList(arg1:string):Promise<Array<manager.SnapshotInfo>>;
 export function SnapshotRevert(arg1:string):Promise<string>;
 
 export function Upload(arg1:manager.UploadRequest):Promise<string>;
-
-export function VMDeployAndRun(arg1:manager.DeployRequest):Promise<string>;
 
 export function VMInstallTools(arg1:string):Promise<string>;
 

@@ -56,8 +56,13 @@ func (b *Backend) run(args ...string) (string, error) {
 	configureCmd(cmd)
 	out, err := cmd.Output()
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok && len(exitErr.Stderr) > 0 {
-			return "", fmt.Errorf("%s", strings.TrimSpace(string(exitErr.Stderr)))
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			if msg := strings.TrimSpace(string(exitErr.Stderr)); msg != "" {
+				return "", fmt.Errorf("%s", msg)
+			}
+			if msg := strings.TrimSpace(string(out)); msg != "" {
+				return "", fmt.Errorf("%s", msg)
+			}
 		}
 		return "", err
 	}
@@ -134,6 +139,11 @@ func (b *Backend) ListVMs(_ context.Context) ([]manager.VMInfo, error) {
 		if _, on := running[vmx]; on {
 			info.PowerState = "poweredOn"
 			info.ToolsStatus = b.checkToolsState(vmx)
+			if info.ToolsStatus == "toolsOk" || info.ToolsStatus == "toolsOld" {
+				if ip, err := b.run(ws("getGuestIPAddress", vmx)...); err == nil {
+					info.IPAddress = strings.TrimSpace(ip)
+				}
+			}
 		} else if isSuspended(vmx) {
 			info.PowerState = "suspended"
 			info.ToolsStatus = "toolsNotRunning"
@@ -263,7 +273,7 @@ func guestRunEnv(vmx string) (prog, flag, outPath string) {
 	outName := fmt.Sprintf("exec_out_%d.txt", time.Now().UnixNano())
 	info, _ := parseVMX(vmx)
 	if strings.Contains(strings.ToLower(info.GuestOS), "windows") {
-		return `C:\Windows\System32\cmd.exe`, "/c", `C:\Windows\Temp\` + outName
+		return `C:\Windows\System32\cmd.exe`, "/c", `C:\Users\Public\` + outName
 	}
 	return "/bin/sh", "-c", "/tmp/" + outName
 }
@@ -294,11 +304,33 @@ func (b *Backend) GuestRun(_ context.Context, emit jobs.EmitFn, req manager.RunR
 	prog, flag, outPath := guestRunEnv(req.VMRef)
 
 	emit(10, "Executing command...")
-	_, err := b.run(guest(req.Username, req.Password,
-		"runProgramInGuest", req.VMRef,
-		prog, flag, req.Command+" > "+outPath+" 2>&1")...)
-	if err != nil {
-		return fmt.Errorf("running command: %w", err)
+	var runErr error
+	if prog == `C:\Windows\System32\cmd.exe` {
+		// cmd.exe I/O redirection doesn't work in VMware's headless guest-exec
+		// session (no console attached). Use PowerShell with Out-File instead.
+		// Pass flags as separate args — vmrun re-quotes a single string, which
+		// makes PowerShell treat it as a positional parameter instead of flags.
+		args := append(
+			guest(req.Username, req.Password, "runProgramInGuest", req.VMRef, manager.WinPSExePath),
+			manager.WinPSCmdArgList(req.Command, outPath)...,
+		)
+		emit(11, fmt.Sprintf("guest program: %s", manager.WinPSExePath))
+		emit(12, fmt.Sprintf("outPath: %s", outPath))
+		_, runErr = b.run(args...)
+	} else {
+		emit(11, fmt.Sprintf("guest program: %s %s", prog, flag))
+		emit(12, fmt.Sprintf("outPath: %s", outPath))
+		_, runErr = b.run(guest(req.Username, req.Password,
+			"runProgramInGuest", req.VMRef,
+			prog, flag, req.Command+" > "+outPath+" 2>&1")...)
+	}
+	emit(15, fmt.Sprintf("runProgramInGuest result: err=%v", runErr))
+
+	// vmrun exits with code 1 whenever the guest program itself exits non-zero,
+	// but the output file may still exist. Only bail out for genuine vmrun errors
+	// (auth failures, tools not running, etc.) — not guest exit-code errors.
+	if runErr != nil && !strings.Contains(runErr.Error(), "non-zero exit code") {
+		return fmt.Errorf("running command: %w", runErr)
 	}
 
 	emit(80, "Downloading output...")
@@ -310,10 +342,14 @@ func (b *Backend) GuestRun(_ context.Context, emit jobs.EmitFn, req manager.RunR
 	tmpFile.Close()
 	defer os.Remove(tmpPath)
 
-	_, err = b.run(guest(req.Username, req.Password,
+	_, downloadErr := b.run(guest(req.Username, req.Password,
 		"copyFileFromGuestToHost", req.VMRef, outPath, tmpPath)...)
-	if err != nil {
-		return fmt.Errorf("downloading output: %w", err)
+	emit(85, fmt.Sprintf("copyFileFromGuestToHost result: err=%v", downloadErr))
+	if downloadErr != nil {
+		if runErr != nil {
+			return fmt.Errorf("running command: %w\ndownload: %w", runErr, downloadErr)
+		}
+		return fmt.Errorf("downloading output: %w", downloadErr)
 	}
 
 	// best-effort cleanup of the temp file in the guest
@@ -325,12 +361,16 @@ func (b *Backend) GuestRun(_ context.Context, emit jobs.EmitFn, req manager.RunR
 		return fmt.Errorf("reading output: %w", err)
 	}
 
-	output := string(data)
+	output := strings.TrimSpace(string(data))
 	if len(output) > 16*1024 {
 		output = output[:16*1024] + "\n[output truncated]"
 	}
 	if output == "" {
 		output = "(no output)"
+	}
+	if runErr != nil {
+		emit(100, output+"\n\n["+runErr.Error()+"]")
+		return nil
 	}
 	emit(100, output)
 	return nil
@@ -365,90 +405,14 @@ func (b *Backend) InstallTools(ctx context.Context, emit jobs.EmitFn, vmRef stri
 	configureCmd(cmd)
 	_, cmdErr := cmd.Output()
 
-	if mountCtx.Err() == context.DeadlineExceeded {
+	// Both a quick non-zero exit (no guest agent to respond) and a timeout (agent
+	// never responded) mean the same thing: tools are not installed. In either case
+	// the ISO is already mounted at the hypervisor level; guide the user.
+	if cmdErr != nil {
 		emit(100, "VMware Tools ISO mounted. Open the CD-ROM drive inside the guest and run setup64.exe (or setup.exe on 32-bit) to complete installation.")
 		return nil
 	}
-	if cmdErr != nil {
-		if exitErr, ok := cmdErr.(*exec.ExitError); ok && len(exitErr.Stderr) > 0 {
-			return fmt.Errorf("%s", strings.TrimSpace(string(exitErr.Stderr)))
-		}
-		return fmt.Errorf("installTools: %w", cmdErr)
-	}
 
 	emit(100, "VMware Tools installation initiated in guest.")
-	return nil
-}
-
-func (b *Backend) DeployAndRun(_ context.Context, emit jobs.EmitFn, req manager.DeployRequest) error {
-	info, _ := parseVMX(req.VMRef)
-	isWin := strings.HasPrefix(strings.ToLower(info.GuestOS), "win")
-
-	filename := filepath.Base(req.LocalPath)
-	outName := fmt.Sprintf("deploy_out_%d.txt", time.Now().UnixNano())
-
-	var guestInstallerPath, guestOutPath, prog, flag string
-	if isWin {
-		guestInstallerPath = `C:\Windows\Temp\` + filename
-		guestOutPath = `C:\Windows\Temp\` + outName
-		prog = `C:\Windows\System32\cmd.exe`
-		flag = "/c"
-	} else {
-		guestInstallerPath = "/tmp/" + filename
-		guestOutPath = "/tmp/" + outName
-		prog = "/bin/sh"
-		flag = "-c"
-	}
-
-	runCmd := req.RunCommand
-	if runCmd == "" {
-		runCmd = manager.DerivedRunCommand(isWin, guestInstallerPath)
-	}
-
-	emit(10, fmt.Sprintf("Uploading %s to guest...", filename))
-	if _, err := b.run(guest(req.Username, req.Password,
-		"copyFileFromHostToGuest", req.VMRef, req.LocalPath, guestInstallerPath)...); err != nil {
-		return fmt.Errorf("uploading installer: %w", err)
-	}
-
-	emit(40, "Running installer...")
-	_, runErr := b.run(guest(req.Username, req.Password,
-		"runProgramInGuest", req.VMRef,
-		prog, flag, runCmd+" > "+guestOutPath+" 2>&1")...)
-
-	emit(80, "Retrieving installer output...")
-	output := ""
-	if tmpFile, err := os.CreateTemp("", "deploy_out_*.txt"); err == nil {
-		tmpPath := tmpFile.Name()
-		tmpFile.Close()
-		defer os.Remove(tmpPath)
-		if _, err := b.run(guest(req.Username, req.Password,
-			"copyFileFromGuestToHost", req.VMRef, guestOutPath, tmpPath)...); err == nil {
-			if data, err := os.ReadFile(tmpPath); err == nil {
-				output = strings.TrimSpace(string(data))
-				if len(output) > 16*1024 {
-					output = output[:16*1024] + "\n[output truncated]"
-				}
-			}
-		}
-	}
-
-	emit(95, "Cleaning up...")
-	_, _ = b.run(guest(req.Username, req.Password, "deleteFileInGuest", req.VMRef, guestInstallerPath)...)
-	_, _ = b.run(guest(req.Username, req.Password, "deleteFileInGuest", req.VMRef, guestOutPath)...)
-
-	if runErr != nil {
-		errMsg := fmt.Sprintf("installer failed: %s", runErr)
-		if output != "" {
-			errMsg += "\n\n" + output
-		}
-		return fmt.Errorf("%s", errMsg)
-	}
-
-	if output != "" {
-		emit(100, output)
-	} else {
-		emit(100, "Installer completed successfully.")
-	}
 	return nil
 }

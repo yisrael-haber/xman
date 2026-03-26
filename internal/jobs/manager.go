@@ -61,6 +61,11 @@ func (m *Manager) Submit(feature, label string, fn func(ctx context.Context, emi
 			m.mu.Lock()
 			job.Progress = progress
 			job.Message = message
+			job.Log = append(job.Log, LogEntry{
+				Progress:  progress,
+				Message:   message,
+				Timestamp: time.Now(),
+			})
 			m.mu.Unlock()
 			m.emit(job)
 		}

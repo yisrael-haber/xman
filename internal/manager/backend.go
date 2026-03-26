@@ -37,7 +37,6 @@ type Backend interface {
 	Upload(ctx context.Context, emit jobs.EmitFn, req UploadRequest) error
 	Download(ctx context.Context, emit jobs.EmitFn, req DownloadRequest) error
 	GuestRun(ctx context.Context, emit jobs.EmitFn, req RunRequest) error
-	DeployAndRun(ctx context.Context, emit jobs.EmitFn, req DeployRequest) error
 
 	// Inventory (only if Capabilities.Inventory == true)
 	ListHosts(ctx context.Context) ([]HostInfo, error)

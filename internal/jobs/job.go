@@ -12,6 +12,13 @@ const (
 	StatusFailed    Status = "failed"
 )
 
+// LogEntry is a single timestamped entry in a job's history.
+type LogEntry struct {
+	Progress  int       `json:"progress"`
+	Message   string    `json:"message"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
 // Job represents a single long-running operation.
 type Job struct {
 	ID        string     `json:"id"`
@@ -19,8 +26,9 @@ type Job struct {
 	Label     string     `json:"label"`
 	Status    Status     `json:"status"`
 	Progress  int        `json:"progress"`          // 0-100
-	Message   string     `json:"message"`           // current status message
+	Message   string     `json:"message"`           // current status message (last emit)
 	Error     string     `json:"error,omitempty"`
+	Log       []LogEntry `json:"log"`               // full history of all emits
 	StartedAt time.Time  `json:"startedAt"`
 	EndedAt   *time.Time `json:"endedAt,omitempty"`
 

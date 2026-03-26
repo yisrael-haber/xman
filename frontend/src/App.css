@@ -83,6 +83,7 @@
 
 .field--inline {
     flex: 1;
+    min-width: 150px;
 }
 
 .field label {
@@ -186,6 +187,54 @@
 .cred-row {
     display: flex;
     gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.field--narrow {
+    max-width: 6rem;
+    flex: 0 0 6rem;
+}
+
+
+.mode-toggle {
+    display: flex;
+    gap: 0;
+    border: 1px solid #2e4560;
+    border-radius: 5px;
+    overflow: hidden;
+    width: fit-content;
+}
+
+.mode-btn {
+    padding: 0.25rem 0.85rem;
+    background: transparent;
+    border: none;
+    border-right: 1px solid #2e4560;
+    color: #8899aa;
+    cursor: pointer;
+    font-size: 0.83rem;
+    line-height: 1.5;
+    transition: background 0.1s, color 0.1s;
+}
+
+.mode-btn:last-child {
+    border-right: none;
+}
+
+.mode-btn:hover {
+    background: #1e2d3f;
+    color: #c8d8e8;
+}
+
+.mode-btn--active {
+    background: #2d5278;
+    color: #c8e0f4;
+    font-weight: 600;
+}
+
+.mode-btn--active:hover {
+    background: #2d5278;
+    color: #c8e0f4;
 }
 
 /* ── Main shell ─────────────────────────────────────────────────────── */
@@ -536,11 +585,17 @@
 
 .job-item {
     display: flex;
-    align-items: center;
-    gap: 0.75rem;
+    flex-direction: column;
     padding: 0.4rem 1rem;
     border-bottom: 1px solid #1e2d3f;
     min-height: 36px;
+}
+
+.job-item-header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    min-height: 28px;
 }
 
 .job-info {
@@ -549,6 +604,13 @@
     align-items: center;
     gap: 0.75rem;
     min-width: 0;
+}
+
+.job-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    flex-shrink: 0;
 }
 
 .job-label {
@@ -603,6 +665,62 @@
 }
 
 .job-dismiss:hover { color: #c8d8e8; }
+
+.job-expand {
+    background: transparent;
+    border: none;
+    color: #557799;
+    cursor: pointer;
+    font-size: 0.6rem;
+    line-height: 1;
+    padding: 0 0.25rem;
+    transition: transform 0.15s ease, color 0.15s ease;
+    transform: rotate(0deg);
+}
+
+.job-expand--open {
+    transform: rotate(90deg);
+}
+
+.job-expand:hover { color: #c8d8e8; }
+
+.job-log {
+    margin-top: 0.35rem;
+    padding: 0.35rem 0.5rem;
+    background: #111c2a;
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 0.72rem;
+    max-height: 180px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+}
+
+.job-log-entry {
+    display: flex;
+    gap: 0.6rem;
+    align-items: baseline;
+}
+
+.job-log-time {
+    color: #3d5a73;
+    flex-shrink: 0;
+}
+
+.job-log-progress {
+    color: #4a7fa8;
+    flex-shrink: 0;
+    width: 2.5rem;
+    text-align: right;
+}
+
+.job-log-message {
+    color: #8aafc8;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
 
 /* ── Badge variant ──────────────────────────────────────────────────── */
 

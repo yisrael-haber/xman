@@ -26,6 +26,18 @@ export function InventoryHosts() {
   return window['go']['manager']['Manager']['InventoryHosts']();
 }
 
+export function SSHDownload(arg1) {
+  return window['go']['manager']['Manager']['SSHDownload'](arg1);
+}
+
+export function SSHRun(arg1) {
+  return window['go']['manager']['Manager']['SSHRun'](arg1);
+}
+
+export function SSHUpload(arg1) {
+  return window['go']['manager']['Manager']['SSHUpload'](arg1);
+}
+
 export function SetBackend(arg1) {
   return window['go']['manager']['Manager']['SetBackend'](arg1);
 }
@@ -52,10 +64,6 @@ export function SnapshotRevert(arg1) {
 
 export function Upload(arg1) {
   return window['go']['manager']['Manager']['Upload'](arg1);
-}
-
-export function VMDeployAndRun(arg1) {
-  return window['go']['manager']['Manager']['VMDeployAndRun'](arg1);
 }
 
 export function VMInstallTools(arg1) {
