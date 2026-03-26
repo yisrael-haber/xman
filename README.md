@@ -195,3 +195,34 @@ sudo yum install open-vm-tools
 Windows guests require VMware Tools installed from the vCenter ISO (`Actions > Guest OS > Install VMware Tools`) or via the Workstation Tools install feature in this application.
 
 If VMware Tools are not available, switch to **SSH / SFTP** transport in the Run Command or File Transfer tabs.
+
+---
+
+## Roadmap
+
+### Network Management
+- **Guest network configuration** — view and change IP address, subnet mask, gateway, and DNS settings inside a running guest (via guest exec or SSH); useful for reconfiguring a cloned VM without needing to open a console
+- **vNIC management** — add, remove, or reconnect virtual network adapters; change the portgroup/network a VM is connected to
+- **Port forwarding (Workstation)** — manage VMware Workstation NAT port-forwarding rules from the UI
+
+### Packet Capture / Network Sniffing
+- **Guest-side capture** — run `tcpdump` or `Wireshark` inside the guest via SSH or guest exec, stream the output to a local `.pcap` file; works on both backends
+- **vCenter distributed switch capture** — use the vSphere port mirroring or `dvs.VmVnic.Capture` API to capture traffic on a VM's vNIC at the hypervisor level without touching the guest OS; vCenter only
+
+### Guest Inspection
+- **File browser** — browse the guest filesystem directory tree and open/download individual files without specifying a full path each time
+- **Process viewer** — list running processes inside the guest and send kill signals; useful for troubleshooting hung services
+- **Log harvester** — select common log locations (`/var/log`, Windows Event Log) and pull them to the local machine in one click
+
+### VM Lifecycle
+- **Clone / deploy from template** — clone a running VM or deploy a new one from a template with configurable name, datastore, and network (vCenter)
+- **Bulk operations** — apply a power action or snapshot to multiple selected VMs at once
+- **Scheduled snapshots** — configure a recurring snapshot schedule (e.g. nightly before maintenance)
+
+### Multi-Connection
+- **Multiple simultaneous backends** — connect to more than one vCenter or Workstation instance in the same session and switch between them without disconnecting
+- **Saved connection profiles** — store named connection profiles (URL, username, backend type) so reconnecting is a single click
+
+### Credential & Access Helpers
+- **SSH key deployment** — generate or import an SSH key pair and push the public key to `~/.ssh/authorized_keys` inside the guest via VMware guest ops, eliminating the need to re-enter passwords for SSH transport
+- **Credential profiles** — save named guest credential sets and select them from a dropdown rather than typing on each operation
