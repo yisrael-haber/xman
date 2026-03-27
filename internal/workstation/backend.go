@@ -3,10 +3,14 @@ package workstation
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"xman/internal/jobs"
@@ -124,37 +128,55 @@ func (b *Backend) ListVMs(_ context.Context) ([]manager.VMInfo, error) {
 		return nil, err
 	}
 
-	out := make([]manager.VMInfo, 0, len(vmxPaths))
-	for _, vmx := range vmxPaths {
-		info := manager.VMInfo{Ref: vmx}
-
-		vmxData, err := parseVMX(vmx)
-		if err == nil {
-			info.Name = vmxData.DisplayName
-			info.GuestOS = vmxData.GuestOS
-			info.NumCPU = vmxData.NumCPU
-			info.MemoryMB = vmxData.MemoryMB
-		}
-
-		if _, on := running[vmx]; on {
-			info.PowerState = "poweredOn"
-			info.ToolsStatus = b.checkToolsState(vmx)
-			if info.ToolsStatus == "toolsOk" || info.ToolsStatus == "toolsOld" {
-				if ip, err := b.run(ws("getGuestIPAddress", vmx)...); err == nil {
-					info.IPAddress = strings.TrimSpace(ip)
-				}
-			}
-		} else if isSuspended(vmx) {
-			info.PowerState = "suspended"
-			info.ToolsStatus = "toolsNotRunning"
-		} else {
-			info.PowerState = "poweredOff"
-			info.ToolsStatus = "toolsNotRunning"
-		}
-
-		out = append(out, info)
+	// Fetch per-VM details concurrently to avoid O(2N) serial vmrun calls.
+	type result struct {
+		idx  int
+		info manager.VMInfo
 	}
-	return out, nil
+	results := make([]manager.VMInfo, len(vmxPaths))
+	ch := make(chan result, len(vmxPaths))
+
+	var wg sync.WaitGroup
+	for i, vmx := range vmxPaths {
+		wg.Add(1)
+		go func(idx int, vmxPath string) {
+			defer wg.Done()
+			info := manager.VMInfo{Ref: vmxPath}
+
+			vmxData, err := parseVMX(vmxPath)
+			if err == nil {
+				info.Name = vmxData.DisplayName
+				info.GuestOS = vmxData.GuestOS
+				info.NumCPU = vmxData.NumCPU
+				info.MemoryMB = vmxData.MemoryMB
+			}
+
+			if _, on := running[vmxPath]; on {
+				info.PowerState = "poweredOn"
+				info.ToolsStatus = b.checkToolsState(vmxPath)
+				if info.ToolsStatus == "toolsOk" || info.ToolsStatus == "toolsOld" {
+					if ip, err := b.run(ws("getGuestIPAddress", vmxPath)...); err == nil {
+						info.IPAddress = strings.TrimSpace(ip)
+					}
+				}
+			} else if isSuspended(vmxPath) {
+				info.PowerState = "suspended"
+				info.ToolsStatus = "toolsNotRunning"
+			} else {
+				info.PowerState = "poweredOff"
+				info.ToolsStatus = "toolsNotRunning"
+			}
+
+			ch <- result{idx: idx, info: info}
+		}(i, vmx)
+	}
+
+	wg.Wait()
+	close(ch)
+	for r := range ch {
+		results[r.idx] = r.info
+	}
+	return results, nil
 }
 
 // checkToolsState returns a toolsStatus string for a running VM.
@@ -234,7 +256,6 @@ func (b *Backend) CreateSnapshot(_ context.Context, emit jobs.EmitFn, req manage
 }
 
 func (b *Backend) RevertSnapshot(_ context.Context, emit jobs.EmitFn, snapRef string) error {
-	// snapRef is encoded as "vmRef\x00snapName" — see SnapshotRevert in manager
 	vmRef, snapName := splitSnapRef(snapRef)
 	emit(10, "Reverting to snapshot...")
 	_, err := b.run(ws("revertToSnapshot", vmRef, snapName)...)
@@ -267,15 +288,16 @@ func splitSnapRef(ref string) (vmRef, snapName string) {
 
 // --- Guest operations ---
 
-// guestRunEnv returns the shell program, argument flag, and a temp output path
-// appropriate for the VM's guest OS (detected from the .vmx file).
-func guestRunEnv(vmx string) (prog, flag, outPath string) {
+// guestRunEnv returns whether the guest is Windows and a temp output path,
+// based on the guest OS string from the VMX or request.
+// Handles both VMX short IDs ("win10-64") and display names ("Microsoft Windows 10 (64-bit)").
+func guestRunEnv(guestOS string) (isWindows bool, outPath string) {
 	outName := fmt.Sprintf("exec_out_%d.txt", time.Now().UnixNano())
-	info, _ := parseVMX(vmx)
-	if strings.Contains(strings.ToLower(info.GuestOS), "windows") {
-		return `C:\Windows\System32\cmd.exe`, "/c", `C:\Users\Public\` + outName
+	lower := strings.ToLower(guestOS)
+	if strings.HasPrefix(lower, "win") || strings.Contains(lower, "windows") {
+		return true, `C:\Users\Public\` + outName
 	}
-	return "/bin/sh", "-c", "/tmp/" + outName
+	return false, "/tmp/" + outName
 }
 
 func (b *Backend) Upload(_ context.Context, emit jobs.EmitFn, req manager.UploadRequest) error {
@@ -301,11 +323,11 @@ func (b *Backend) Download(_ context.Context, emit jobs.EmitFn, req manager.Down
 }
 
 func (b *Backend) GuestRun(_ context.Context, emit jobs.EmitFn, req manager.RunRequest) error {
-	prog, flag, outPath := guestRunEnv(req.VMRef)
+	isWin, outPath := guestRunEnv(req.GuestOS)
 
 	emit(10, "Executing command...")
 	var runErr error
-	if prog == `C:\Windows\System32\cmd.exe` {
+	if isWin {
 		// cmd.exe I/O redirection doesn't work in VMware's headless guest-exec
 		// session (no console attached). Use PowerShell with Out-File instead.
 		// Pass flags as separate args — vmrun re-quotes a single string, which
@@ -314,17 +336,12 @@ func (b *Backend) GuestRun(_ context.Context, emit jobs.EmitFn, req manager.RunR
 			guest(req.Username, req.Password, "runProgramInGuest", req.VMRef, manager.WinPSExePath),
 			manager.WinPSCmdArgList(req.Command, outPath)...,
 		)
-		emit(11, fmt.Sprintf("guest program: %s", manager.WinPSExePath))
-		emit(12, fmt.Sprintf("outPath: %s", outPath))
 		_, runErr = b.run(args...)
 	} else {
-		emit(11, fmt.Sprintf("guest program: %s %s", prog, flag))
-		emit(12, fmt.Sprintf("outPath: %s", outPath))
 		_, runErr = b.run(guest(req.Username, req.Password,
 			"runProgramInGuest", req.VMRef,
-			prog, flag, req.Command+" > "+outPath+" 2>&1")...)
+			"/bin/sh", "-c", req.Command+" > "+outPath+" 2>&1")...)
 	}
-	emit(15, fmt.Sprintf("runProgramInGuest result: err=%v", runErr))
 
 	// vmrun exits with code 1 whenever the guest program itself exits non-zero,
 	// but the output file may still exist. Only bail out for genuine vmrun errors
@@ -344,7 +361,6 @@ func (b *Backend) GuestRun(_ context.Context, emit jobs.EmitFn, req manager.RunR
 
 	_, downloadErr := b.run(guest(req.Username, req.Password,
 		"copyFileFromGuestToHost", req.VMRef, outPath, tmpPath)...)
-	emit(85, fmt.Sprintf("copyFileFromGuestToHost result: err=%v", downloadErr))
 	if downloadErr != nil {
 		if runErr != nil {
 			return fmt.Errorf("running command: %w\ndownload: %w", runErr, downloadErr)
@@ -384,6 +400,195 @@ func (b *Backend) ListHosts(_ context.Context) ([]manager.HostInfo, error) {
 
 func (b *Backend) ListDatastores(_ context.Context) ([]manager.DatastoreInfo, error) {
 	return nil, fmt.Errorf("datastore inventory not available for Workstation")
+}
+
+func (b *Backend) ListNetworks(_ context.Context) (manager.NetworkSummary, error) {
+	// Step 1: Enumerate VMware virtual network adapters on the host OS.
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return manager.NetworkSummary{}, fmt.Errorf("listing network interfaces: %w", err)
+	}
+
+	type ifEntry struct {
+		mtu   int32
+		addrs []string
+	}
+	ifMap := make(map[int]ifEntry)
+	for _, iface := range ifaces {
+		n, ok := parseVMnetNumber(iface.Name)
+		if !ok {
+			continue
+		}
+		e := ifEntry{mtu: int32(iface.MTU)}
+		if addrs, err := iface.Addrs(); err == nil {
+			for _, addr := range addrs {
+				e.addrs = append(e.addrs, addr.String())
+			}
+		}
+		ifMap[n] = e
+	}
+
+	// Step 2: Map VMnet number → VM names by parsing every known VMX file.
+	vmnetVMs := make(map[int][]string)
+	if vmxPaths, err := b.allVMXPaths(); err == nil {
+		for _, vmxPath := range vmxPaths {
+			info, err := parseVMX(vmxPath)
+			if err != nil {
+				continue
+			}
+			name := info.DisplayName
+			if name == "" {
+				name = strings.TrimSuffix(filepath.Base(vmxPath), ".vmx")
+			}
+			for _, n := range vmxNetVMnets(vmxPath) {
+				vmnetVMs[n] = appendUniqStr(vmnetVMs[n], name)
+			}
+		}
+	}
+
+	// Step 3: Assemble sorted switch list.
+	nums := make([]int, 0, len(ifMap))
+	for n := range ifMap {
+		nums = append(nums, n)
+	}
+	sort.Ints(nums)
+
+	switches := make([]manager.SwitchInfo, 0, len(nums))
+	for _, n := range nums {
+		e := ifMap[n]
+		switches = append(switches, manager.SwitchInfo{
+			Name:    fmt.Sprintf("VMnet%d", n),
+			Type:    vmnetType(n),
+			MTU:     e.mtu,
+			Uplinks: e.addrs,
+			Hosts:   vmnetVMs[n],
+		})
+	}
+
+	return manager.NetworkSummary{Switches: switches}, nil
+}
+
+// allVMXPaths returns the VMX paths from the configured directory or the default inventory.
+func (b *Backend) allVMXPaths() ([]string, error) {
+	if b.vmDir != "" {
+		return scanDirectory(b.vmDir)
+	}
+	invPath, err := inventoryPath()
+	if err != nil {
+		return nil, err
+	}
+	paths, err := parseInventory(invPath)
+	if err != nil || len(paths) == 0 {
+		return scanVMDirectories()
+	}
+	return paths, nil
+}
+
+// vmxNetVMnets returns the VMnet numbers used by all present network adapters in a VMX file.
+func vmxNetVMnets(vmxPath string) []int {
+	data, err := os.ReadFile(vmxPath)
+	if err != nil {
+		return nil
+	}
+
+	type adapter struct {
+		present        bool
+		connectionType string
+		vnet           string
+	}
+	adapters := make(map[string]*adapter)
+
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		eq := strings.Index(line, " = ")
+		if eq < 0 {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(line[:eq]))
+		val := strings.Trim(strings.TrimSpace(line[eq+3:]), `"`)
+
+		if !strings.HasPrefix(key, "ethernet") {
+			continue
+		}
+		dot := strings.IndexByte(key, '.')
+		if dot < 0 {
+			continue
+		}
+		id, field := key[:dot], key[dot+1:]
+		if adapters[id] == nil {
+			adapters[id] = &adapter{}
+		}
+		switch field {
+		case "present":
+			adapters[id].present = strings.EqualFold(val, "true")
+		case "connectiontype":
+			adapters[id].connectionType = strings.ToLower(val)
+		case "vnet":
+			adapters[id].vnet = strings.ToLower(val)
+		}
+	}
+
+	var out []int
+	for _, a := range adapters {
+		if !a.present {
+			continue
+		}
+		// Explicit vnet= takes priority over connectionType mapping.
+		if a.vnet != "" && strings.HasPrefix(a.vnet, "vmnet") {
+			if n, err := strconv.Atoi(a.vnet[5:]); err == nil {
+				out = append(out, n)
+				continue
+			}
+		}
+		switch a.connectionType {
+		case "nat":
+			out = append(out, 8)
+		case "hostonly":
+			out = append(out, 1)
+		case "bridged":
+			out = append(out, 0)
+		}
+	}
+	return out
+}
+
+func appendUniqStr(slice []string, s string) []string {
+	for _, v := range slice {
+		if v == s {
+			return slice
+		}
+	}
+	return append(slice, s)
+}
+
+// parseVMnetNumber extracts the VMnet index from an interface name.
+// Handles Linux ("vmnet1") and Windows ("VMware Network Adapter VMnet1").
+func parseVMnetNumber(name string) (int, bool) {
+	lower := strings.ToLower(name)
+	if strings.HasPrefix(lower, "vmnet") {
+		if n, err := strconv.Atoi(name[5:]); err == nil {
+			return n, true
+		}
+	}
+	if idx := strings.Index(lower, "vmnet"); idx >= 0 {
+		if n, err := strconv.Atoi(strings.TrimSpace(name[idx+5:])); err == nil {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
+func vmnetType(n int) string {
+	switch n {
+	case 0:
+		return "bridged"
+	case 1:
+		return "host-only"
+	case 8:
+		return "nat"
+	default:
+		return "custom"
+	}
 }
 
 func (b *Backend) InstallTools(ctx context.Context, emit jobs.EmitFn, vmRef string) error {

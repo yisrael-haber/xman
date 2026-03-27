@@ -31,6 +31,25 @@ Upload and download files to/from a guest VM using two transports:
 
 Both directions (upload/download) share the same credentials and transport selection.
 
+### Remote Install
+Upload an installer package to a guest VM and execute it silently — no GUI required inside the guest. Supports:
+
+| Package type | Installer invoked |
+|---|---|
+| `.msi` | `msiexec /i … /qn /norestart` |
+| `.msix` / `.msixbundle` | `powershell Add-AppxPackage` |
+| `.exe` | Silent flags (`/S /SILENT /VERYSILENT /quiet`) |
+| `.deb` | `dpkg -i` + `apt-get install -f` |
+| `.rpm` | `rpm -i` |
+
+The install command is auto-detected from the file extension and shown in an editable field before running, so it can be adjusted. Supports both **VMware** and **SSH** transports.
+
+### Networks
+A global view of the virtual network topology — available on both backends:
+
+- **vCenter** — Lists all standard vSwitches and Distributed Virtual Switches (DVS) per host, with MTU, uplinks, VLAN configuration, and the hosts and VMs attached to each port group.
+- **Workstation** — Lists all VMnet interfaces found on the host OS with their MTU and IP configuration, and which VMs are connected to each interface (resolved by parsing VMX files).
+
 ### Inventory (vCenter only)
 - List ESXi hosts with CPU and memory utilization
 - List datastores with capacity and free space
@@ -41,8 +60,13 @@ Both directions (upload/download) share the same credentials and transport selec
 - On Workstation: mounts the bundled Tools ISO and runs the installer
 - open-vm-tools is recommended for Linux guests (see below)
 
+### Connection Settings
+- Connection settings for both backends are saved to a single `connection.json` file under the OS user config directory, with separate sections for vCenter and Workstation so switching backends never overwrites the other's settings
+- vCenter passwords are stored in the OS keyring (Windows Credential Manager / libsecret) rather than on disk
+- Settings are pre-populated on the next launch; the last-used backend tab is restored automatically
+
 ### Job Tracking
-All long-running operations (file transfers, command execution, Tools install) are tracked as jobs with progress indication, log output, and status. Jobs can be dismissed individually or all at once.
+All long-running operations (file transfers, command execution, installs, Tools install) are tracked as jobs with progress indication, log output, and status. Jobs can be dismissed individually or all at once.
 
 ---
 
@@ -123,6 +147,9 @@ wails dev -tags webkit2_41
 
 # Build a production binary
 wails build -tags webkit2_41
+
+# Cross-compile a Windows .exe from Linux / WSL2
+wails build -platform windows/amd64
 ```
 
 > **Ubuntu 24.04**: the `-tags webkit2_41` flag is required because Ubuntu 24.04 ships `webkit2gtk-4.1`.
@@ -133,7 +160,7 @@ wails build -tags webkit2_41
 
 ```
 xman/
-├── app.go                       # Wails entry point
+├── app.go                       # Wails entry point — connection, settings, file dialogs
 ├── main.go
 ├── internal/
 │   ├── config/                  # Connection settings and credential storage
@@ -144,6 +171,8 @@ xman/
 │   │   ├── snapshots.go         # Snapshot management
 │   │   ├── filetransfer.go      # VMware guest file transfer
 │   │   ├── guestexec.go         # Guest command execution
+│   │   ├── install.go           # Remote installer (VMware + SSH transports)
+│   │   ├── networks.go          # Network topology types and inventory
 │   │   ├── ssh.go               # SSH/SFTP transport bindings
 │   │   ├── psutil.go            # PowerShell helpers for Windows guests
 │   │   ├── inventory.go         # Host and datastore inventory
@@ -167,6 +196,8 @@ xman/
 | File Transfer (VMware)   | ✓       | ✓           |
 | Run Command (SSH)        | ✓       | ✓           |
 | File Transfer (SSH/SFTP) | ✓       | ✓           |
+| Remote Install           | ✓       | ✓           |
+| Networks view            | ✓       | ✓           |
 | Host inventory           | ✓       | —           |
 | Datastore inventory      | ✓       | —           |
 | Tools auto-upgrade       | ✓       | —           |
@@ -176,7 +207,7 @@ xman/
 
 ## Guest Operations Requirements
 
-VMware transport (Run Command and File Transfer) uses the **VMware Guest Operations API**, which requires:
+VMware transport (Run Command, File Transfer, and Remote Install) uses the **VMware Guest Operations API**, which requires:
 
 - VMware Tools (or open-vm-tools) installed and running inside the guest
 - Guest OS credentials (username and password)
@@ -194,7 +225,7 @@ sudo yum install open-vm-tools
 
 Windows guests require VMware Tools installed from the vCenter ISO (`Actions > Guest OS > Install VMware Tools`) or via the Workstation Tools install feature in this application.
 
-If VMware Tools are not available, switch to **SSH / SFTP** transport in the Run Command or File Transfer tabs.
+If VMware Tools are not available, switch to **SSH / SFTP** transport in the Run Command, File Transfer, or Remote Install tabs.
 
 ---
 
@@ -221,7 +252,6 @@ If VMware Tools are not available, switch to **SSH / SFTP** transport in the Run
 
 ### Multi-Connection
 - **Multiple simultaneous backends** — connect to more than one vCenter or Workstation instance in the same session and switch between them without disconnecting
-- **Saved connection profiles** — store named connection profiles (URL, username, backend type) so reconnecting is a single click
 
 ### Credential & Access Helpers
 - **SSH key deployment** — generate or import an SSH key pair and push the public key to `~/.ssh/authorized_keys` inside the guest via VMware guest ops, eliminating the need to re-enter passwords for SSH transport

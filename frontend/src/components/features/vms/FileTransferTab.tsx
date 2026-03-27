@@ -22,8 +22,8 @@ export default function FileTransferTab({ vm, onJobStarted }: Props) {
     const [sshHost, setSshHost] = useState(vm.ipAddress || '');
     const [sshPort, setSshPort] = useState(22);
 
-    // Keep SSH host in sync with selected VM's IP.
-    useEffect(() => { setSshHost(vm.ipAddress || ''); }, [vm.ref]);
+    // Keep SSH host in sync with selected VM's IP (including when it appears after boot).
+    useEffect(() => { setSshHost(vm.ipAddress || ''); }, [vm.ref, vm.ipAddress]);
 
     const [upLocal, setUpLocal] = useState('');
     const [upGuest, setUpGuest] = useState('');
@@ -55,7 +55,7 @@ export default function FileTransferTab({ vm, onJobStarted }: Props) {
             if (mode === 'ssh') {
                 id = await SSHUpload({ host: sshHost, port: sshPort, username, password, localPath: upLocal, guestPath: upGuest });
             } else {
-                id = await Upload({ vmRef: vm.ref, username, password, localPath: upLocal, guestPath: upGuest });
+                id = await Upload({ vmRef: vm.ref, username, password, localPath: upLocal, guestPath: upGuest, guestOS: vm.guestOS });
             }
             onJobStarted(id);
         } catch (e: any) {

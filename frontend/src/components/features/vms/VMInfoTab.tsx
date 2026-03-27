@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { manager } from '../../../../wailsjs/go/models';
 import { VMPowerOn, VMPowerOff, VMReset, VMSuspend, VMInstallTools } from '../../../../wailsjs/go/manager/Manager';
+import { EventsOn, EventsOff } from '../../../../wailsjs/runtime/runtime';
 
 interface Props {
     vm: manager.VMInfo;
@@ -33,15 +34,27 @@ export default function VMInfoTab({ vm, onRefresh, onJobStarted, toolsInstall }:
         (vm.toolsStatus === 'toolsNotInstalled' || vm.toolsStatus === 'toolsOld' || vm.toolsStatus === 'toolsNotRunning');
     const toolsButtonLabel = vm.toolsStatus === 'toolsNotInstalled' ? 'Install VMware Tools' : 'Upgrade VMware Tools';
 
-    async function runAction(action: PowerAction, fn: () => Promise<void>) {
+    async function runAction(action: PowerAction, fn: () => Promise<string>) {
         setError('');
         setBusy(action);
         try {
-            await fn();
-            onRefresh();
+            const id = await fn();
+            onJobStarted(id);
+            const unsub = EventsOn(`job:${id}`, (job: any) => {
+                if (job.status === 'done') {
+                    EventsOff(`job:${id}`);
+                    unsub();
+                    setBusy(null);
+                    onRefresh();
+                } else if (job.status === 'failed' || job.status === 'cancelled') {
+                    EventsOff(`job:${id}`);
+                    unsub();
+                    setBusy(null);
+                    setError(job.error || 'Operation failed');
+                }
+            });
         } catch (e: any) {
             setError(String(e));
-        } finally {
             setBusy(null);
         }
     }

@@ -5,6 +5,7 @@ import Sidebar, { FeatureID } from './Sidebar';
 import JobsBar from './JobsBar';
 import VMPanel from './features/vms/VMPanel';
 import InventoryPanel from './features/inventory/InventoryPanel';
+import NetworksPanel from './features/networks/NetworksPanel';
 import { useJobs } from '../hooks/useJobs';
 
 interface Props {
@@ -37,6 +38,9 @@ export default function MainView({ info, onDisconnect }: Props) {
                 <div className="feature-content">
                     {activeFeature === 'vms' && (
                         <VMPanel onJobStarted={trackJob} toolsInstall={info.toolsInstall} />
+                    )}
+                    {activeFeature === 'networks' && (
+                        <NetworksPanel />
                     )}
                     {activeFeature === 'inventory' && info.inventory && (
                         <InventoryPanel />

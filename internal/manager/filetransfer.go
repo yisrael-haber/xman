@@ -13,6 +13,7 @@ type UploadRequest struct {
 	Password  string `json:"password"`
 	LocalPath string `json:"localPath"`
 	GuestPath string `json:"guestPath"`
+	GuestOS   string `json:"guestOS"` // used by backends to set correct file attributes
 }
 
 // DownloadRequest is the payload sent from the frontend to start a download.

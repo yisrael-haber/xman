@@ -41,6 +41,7 @@ type Backend interface {
 	// Inventory (only if Capabilities.Inventory == true)
 	ListHosts(ctx context.Context) ([]HostInfo, error)
 	ListDatastores(ctx context.Context) ([]DatastoreInfo, error)
+	ListNetworks(ctx context.Context) (NetworkSummary, error)
 
 	// Tools (only if Capabilities.ToolsInstall == true)
 	InstallTools(ctx context.Context, emit jobs.EmitFn, vmRef string) error

@@ -12,6 +12,8 @@ export function Disconnect():Promise<void>;
 
 export function LoadConnectionSettings():Promise<config.ConnectRequest>;
 
+export function OpenDirectoryDialog(arg1:string):Promise<string>;
+
 export function OpenFileDialog(arg1:string):Promise<string>;
 
 export function SaveConnectionSettings(arg1:config.ConnectRequest):Promise<void>;

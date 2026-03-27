@@ -12,11 +12,17 @@ export function Download(arg1:manager.DownloadRequest):Promise<string>;
 
 export function GuestRun(arg1:manager.RunRequest):Promise<string>;
 
+export function Install(arg1:manager.InstallRequest):Promise<string>;
+
 export function InventoryDatastores():Promise<Array<manager.DatastoreInfo>>;
 
 export function InventoryHosts():Promise<Array<manager.HostInfo>>;
 
+export function InventoryNetworks():Promise<manager.NetworkSummary>;
+
 export function SSHDownload(arg1:manager.SSHTransferRequest):Promise<string>;
+
+export function SSHInstall(arg1:manager.SSHInstallRequest):Promise<string>;
 
 export function SSHRun(arg1:manager.SSHRunRequest):Promise<string>;
 
@@ -40,10 +46,10 @@ export function VMInstallTools(arg1:string):Promise<string>;
 
 export function VMList():Promise<Array<manager.VMInfo>>;
 
-export function VMPowerOff(arg1:string):Promise<void>;
+export function VMPowerOff(arg1:string):Promise<string>;
 
-export function VMPowerOn(arg1:string):Promise<void>;
+export function VMPowerOn(arg1:string):Promise<string>;
 
-export function VMReset(arg1:string):Promise<void>;
+export function VMReset(arg1:string):Promise<string>;
 
-export function VMSuspend(arg1:string):Promise<void>;
+export function VMSuspend(arg1:string):Promise<string>;

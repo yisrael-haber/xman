@@ -28,8 +28,8 @@ export default function GuestExecTab({ vm, onJobStarted }: Props) {
     const [error,    setError]    = useState('');
     const outputRef = useRef<HTMLDivElement>(null);
 
-    // Keep SSH host in sync with the selected VM's IP.
-    useEffect(() => { setSshHost(vm.ipAddress || ''); }, [vm.ref]);
+    // Keep SSH host in sync with the selected VM's IP (including when it appears after boot).
+    useEffect(() => { setSshHost(vm.ipAddress || ''); }, [vm.ref, vm.ipAddress]);
 
     useEffect(() => {
         if (outputRef.current) {
@@ -53,7 +53,7 @@ export default function GuestExecTab({ vm, onJobStarted }: Props) {
             if (mode === 'ssh') {
                 id = await SSHRun({ host: sshHost, port: sshPort, username, password, command: cmd });
             } else {
-                id = await GuestRun({ vmRef: vm.ref, username, password, command: cmd });
+                id = await GuestRun({ vmRef: vm.ref, username, password, command: cmd, guestOS: vm.guestOS });
             }
             onJobStarted(id);
 

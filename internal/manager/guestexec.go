@@ -12,6 +12,7 @@ type RunRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
 	Command  string `json:"command"`
+	GuestOS  string `json:"guestOS"` // used by backends to select the right shell
 }
 
 func (m *Manager) GuestRun(req RunRequest) string {

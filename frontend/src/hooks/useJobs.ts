@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react';
 import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime';
+import { JobDismiss } from '../../wailsjs/go/jobs/Manager';
 
 export interface LogEntry {
     progress: number;
@@ -35,6 +36,7 @@ export function useJobs() {
     const dismiss = useCallback((id: string) => {
         EventsOff(`job:${id}`);
         setJobs(prev => prev.filter(j => j.id !== id));
+        JobDismiss(id);
     }, []);
 
     const activeJobs = jobs.filter(j => j.status === 'running');

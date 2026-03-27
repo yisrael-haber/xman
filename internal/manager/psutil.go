@@ -41,25 +41,6 @@ func winPSCmdScript(cmdLine, outPath string) string {
 		"exit $LASTEXITCODE"
 }
 
-// WinPSExprArgs builds a powershell.exe Arguments string (for vCenter's
-// GuestProgramSpec.Arguments) that evaluates psExpr as a PowerShell
-// expression, captures all output to outPath, and exits with $LASTEXITCODE.
-func WinPSExprArgs(psExpr, outPath string) string {
-	return "-NonInteractive -EncodedCommand " + encodePSScript(winPSExprScript(psExpr, outPath))
-}
-
-func winPSExprScript(psExpr, outPath string) string {
-	safeExpr := strings.ReplaceAll(psExpr, "'", "''")
-	safeOut := strings.ReplaceAll(outPath, "'", "''")
-	return "$ErrorActionPreference = 'Continue'\n" +
-		"try {\n" +
-		"    " + safeExpr + " 2>&1 | Out-File -FilePath '" + safeOut + "' -Encoding UTF8 -Force\n" +
-		"} catch {\n" +
-		"    \"ERROR: $_\" | Out-File -FilePath '" + safeOut + "' -Encoding UTF8 -Force\n" +
-		"}\n" +
-		"exit $LASTEXITCODE"
-}
-
 // encodePSScript encodes a PowerShell script as UTF-16LE base64 for use with
 // powershell.exe -EncodedCommand.
 func encodePSScript(script string) string {

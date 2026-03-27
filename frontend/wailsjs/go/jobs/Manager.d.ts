@@ -9,6 +9,8 @@ export function Get(arg1:string):Promise<jobs.Job|boolean>;
 
 export function JobCancel(arg1:string):Promise<void>;
 
+export function JobDismiss(arg1:string):Promise<void>;
+
 export function JobGet(arg1:string):Promise<jobs.Job>;
 
 export function JobList():Promise<Array<jobs.Job>>;

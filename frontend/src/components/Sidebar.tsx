@@ -1,4 +1,4 @@
-export type FeatureID = 'vms' | 'inventory';
+export type FeatureID = 'vms' | 'inventory' | 'networks';
 
 interface NavItem {
     id: FeatureID;
@@ -28,9 +28,20 @@ const InventoryIcon = () => (
     </svg>
 );
 
+const NetworksIcon = () => (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="2" y="2" width="6" height="6" rx="1"/>
+        <rect x="16" y="2" width="6" height="6" rx="1"/>
+        <rect x="9" y="16" width="6" height="6" rx="1"/>
+        <path d="M5 8v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/>
+        <line x1="12" y1="14" x2="12" y2="16"/>
+    </svg>
+);
+
 const NAV_ITEMS: NavItem[] = [
-    { id: 'vms',       label: 'Virtual Machines',    icon: <VMsIcon /> },
-    { id: 'inventory', label: 'Hosts & Datastores',  icon: <InventoryIcon /> },
+    { id: 'vms',       label: 'Virtual Machines',   icon: <VMsIcon /> },
+    { id: 'networks',  label: 'Networks',            icon: <NetworksIcon /> },
+    { id: 'inventory', label: 'Hosts & Datastores', icon: <InventoryIcon /> },
 ];
 
 export default function Sidebar({ active, onChange, showInventory }: Props) {

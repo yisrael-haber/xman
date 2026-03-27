@@ -25,21 +25,25 @@ func NewManager(ctx context.Context) *Manager {
 }
 
 // SetContext provides the Wails runtime context after startup.
-// Also initialises the job map if this is the first call.
 func (m *Manager) SetContext(ctx context.Context) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.ctx = ctx
-	if m.jobs == nil {
-		m.jobs = make(map[string]*Job)
-	}
 }
 
 // Submit starts a new job and returns its ID immediately.
 // The work function receives a cancellable context and an emit function for progress.
+// The job context is derived from the Wails app context so jobs are cancelled on shutdown.
 func (m *Manager) Submit(feature, label string, fn func(ctx context.Context, emit EmitFn) error) string {
 	id := uuid.New().String()
-	jobCtx, cancel := context.WithCancel(context.Background())
+
+	m.mu.RLock()
+	parentCtx := m.ctx
+	m.mu.RUnlock()
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	jobCtx, cancel := context.WithCancel(parentCtx)
 
 	job := &Job{
 		ID:        id,
@@ -127,10 +131,13 @@ func (m *Manager) List() []*Job {
 // emit sends a job update event to the Wails frontend.
 // Event name: "job:<id>" — frontend listens per job ID.
 func (m *Manager) emit(job *Job) {
-	if m.ctx == nil {
+	m.mu.RLock()
+	ctx := m.ctx
+	m.mu.RUnlock()
+	if ctx == nil {
 		return
 	}
-	runtime.EventsEmit(m.ctx, "job:"+job.ID, job)
+	runtime.EventsEmit(ctx, "job:"+job.ID, job)
 }
 
 // --- Wails-exposed methods ---
@@ -149,4 +156,15 @@ func (m *Manager) JobList() []*Job {
 // JobCancel is the Wails binding to cancel a running job.
 func (m *Manager) JobCancel(id string) {
 	m.Cancel(id)
+}
+
+// JobDismiss removes a completed/failed/cancelled job from the map.
+// Called by the frontend when the user dismisses a finished job.
+func (m *Manager) JobDismiss(id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	job, ok := m.jobs[id]
+	if ok && job.Status != StatusRunning {
+		delete(m.jobs, id)
+	}
 }

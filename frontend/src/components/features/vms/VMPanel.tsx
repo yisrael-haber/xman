@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { manager } from '../../../../wailsjs/go/models';
 import { VMList } from '../../../../wailsjs/go/manager/Manager';
 import VMBrowser from './VMBrowser';
@@ -6,13 +6,15 @@ import VMInfoTab from './VMInfoTab';
 import FileTransferTab from './FileTransferTab';
 import SnapshotsTab from './SnapshotsTab';
 import GuestExecTab from './GuestExecTab';
-type TabID = 'info' | 'filetransfer' | 'snapshots' | 'exec';
+import RemoteInstallTab from './RemoteInstallTab';
+type TabID = 'info' | 'filetransfer' | 'snapshots' | 'exec' | 'install';
 
 const TABS: { id: TabID; label: string }[] = [
     { id: 'info',         label: 'VM Info'      },
     { id: 'snapshots',    label: 'Snapshots'    },
     { id: 'exec',         label: 'Run Command'  },
     { id: 'filetransfer', label: 'File Transfer' },
+    { id: 'install',      label: 'Install'       },
 ];
 
 interface Props {
@@ -26,9 +28,12 @@ export default function VMPanel({ onJobStarted, toolsInstall }: Props) {
     const [loading,  setLoading]  = useState(false);
     const [error,    setError]    = useState('');
     const [activeTab, setActiveTab] = useState<TabID>('info');
+    const refreshing = useRef(false);
 
-    async function loadVMs() {
-        setLoading(true);
+    async function loadVMs(silent = false) {
+        if (refreshing.current) return;
+        refreshing.current = true;
+        if (!silent) setLoading(true);
         setError('');
         try {
             const list = await VMList();
@@ -39,11 +44,16 @@ export default function VMPanel({ onJobStarted, toolsInstall }: Props) {
         } catch (e: any) {
             setError(String(e));
         } finally {
-            setLoading(false);
+            if (!silent) setLoading(false);
+            refreshing.current = false;
         }
     }
 
-    useEffect(() => { loadVMs(); }, []);
+    useEffect(() => {
+        loadVMs();
+        const id = setInterval(() => loadVMs(true), 10_000);
+        return () => clearInterval(id);
+    }, []);
 
     return (
         <div className="vm-panel">
@@ -85,6 +95,9 @@ export default function VMPanel({ onJobStarted, toolsInstall }: Props) {
                             )}
                             {activeTab === 'filetransfer' && (
                                 <FileTransferTab vm={selected} onJobStarted={onJobStarted} />
+                            )}
+                            {activeTab === 'install' && (
+                                <RemoteInstallTab vm={selected} onJobStarted={onJobStarted} />
                             )}
                         </div>
                     </>

@@ -12,12 +12,12 @@ import (
 	"xman/internal/jobs"
 	"xman/internal/manager"
 
-	"github.com/vmware/govmomi/find"
-	"github.com/vmware/govmomi/guest"
 	"github.com/vmware/govmomi/object"
+	"github.com/vmware/govmomi/view"
 	"github.com/vmware/govmomi/vim25/methods"
 	"github.com/vmware/govmomi/vim25/mo"
 	gsoap "github.com/vmware/govmomi/vim25/soap"
+	"github.com/vmware/govmomi/guest"
 	"github.com/vmware/govmomi/vim25/types"
 )
 
@@ -37,6 +37,7 @@ func NewBackend(ctx context.Context, vcURL, username, password string, insecure 
 	}); err != nil {
 		return nil, err
 	}
+	s.StartKeepAlive(ctx)
 	return &Backend{session: s}, nil
 }
 
@@ -60,30 +61,25 @@ func (b *Backend) ListVMs(ctx context.Context) ([]manager.VMInfo, error) {
 		return nil, err
 	}
 
-	finder := find.NewFinder(client.Client, true)
-	dc, err := finder.DefaultDatacenter(ctx)
+	m := view.NewManager(client.Client)
+	v, err := m.CreateContainerView(ctx, client.ServiceContent.RootFolder, []string{"VirtualMachine"}, true)
 	if err != nil {
-		return nil, fmt.Errorf("finding datacenter: %w", err)
+		return nil, fmt.Errorf("creating VM container view: %w", err)
 	}
-	finder.SetDatacenter(dc)
+	defer v.Destroy(ctx)
 
-	vms, err := finder.VirtualMachineList(ctx, "*")
+	var vms []mo.VirtualMachine
+	err = v.Retrieve(ctx, []string{"VirtualMachine"}, []string{
+		"config.name", "config.guestFullName",
+		"config.hardware.numCPU", "config.hardware.memoryMB",
+		"runtime.powerState", "guest.toolsStatus", "guest.ipAddress",
+	}, &vms)
 	if err != nil {
 		return nil, fmt.Errorf("listing VMs: %w", err)
 	}
 
-	props := []string{
-		"config.name", "config.guestFullName",
-		"config.hardware.numCPU", "config.hardware.memoryMB",
-		"runtime.powerState", "guest.toolsStatus", "guest.ipAddress",
-	}
-
 	out := make([]manager.VMInfo, 0, len(vms))
-	for _, vm := range vms {
-		var obj mo.VirtualMachine
-		if err := vm.Properties(ctx, vm.Reference(), props, &obj); err != nil {
-			continue
-		}
+	for _, obj := range vms {
 		out = append(out, toVMInfo(obj))
 	}
 	return out, nil
@@ -266,17 +262,12 @@ func (b *Backend) DeleteSnapshot(ctx context.Context, emit jobs.EmitFn, snapRef 
 
 // --- Guest operations ---
 
-// isWindowsGuest returns true if the VM's guest OS is Windows.
-func (b *Backend) isWindowsGuest(ctx context.Context, vmRef string) bool {
-	vm, err := b.vmObject(ctx, vmRef)
-	if err != nil {
-		return false
-	}
-	var obj mo.VirtualMachine
-	if err := vm.Properties(ctx, vm.Reference(), []string{"config.guestId"}, &obj); err != nil {
-		return false
-	}
-	return obj.Config != nil && strings.HasPrefix(strings.ToLower(obj.Config.GuestId), "win")
+// isWindows returns true if the guest OS string indicates a Windows guest.
+// Handles both vCenter display names ("Microsoft Windows 10 (64-bit)")
+// and VMX short IDs ("win10-64").
+func isWindows(guestOS string) bool {
+	lower := strings.ToLower(guestOS)
+	return strings.HasPrefix(lower, "win") || strings.Contains(lower, "windows")
 }
 
 func (b *Backend) Upload(ctx context.Context, emit jobs.EmitFn, req manager.UploadRequest) error {
@@ -307,7 +298,7 @@ func (b *Backend) Upload(ctx context.Context, emit jobs.EmitFn, req manager.Uplo
 
 	emit(10, "Initiating transfer to guest...")
 	var fileAttrs types.BaseGuestFileAttributes
-	if b.isWindowsGuest(ctx, req.VMRef) {
+	if isWindows(req.GuestOS) {
 		fileAttrs = &types.GuestWindowsFileAttributes{}
 	} else {
 		fileAttrs = &types.GuestPosixFileAttributes{}
@@ -391,7 +382,7 @@ func (b *Backend) GuestRun(ctx context.Context, emit jobs.EmitFn, req manager.Ru
 	outName := fmt.Sprintf("exec_out_%d.txt", time.Now().UnixNano())
 	var outPath string
 	var spec types.GuestProgramSpec
-	if b.isWindowsGuest(ctx, req.VMRef) {
+	if isWindows(req.GuestOS) {
 		outPath = `C:\Users\Public\` + outName
 		spec = types.GuestProgramSpec{
 			ProgramPath:      manager.WinPSExePath,
@@ -478,45 +469,36 @@ func (b *Backend) GuestRun(ctx context.Context, emit jobs.EmitFn, req manager.Ru
 
 // --- Inventory ---
 
-func (b *Backend) finder(ctx context.Context) (*find.Finder, error) {
+func (b *Backend) ListHosts(ctx context.Context) ([]manager.HostInfo, error) {
 	client, err := b.session.Client()
 	if err != nil {
 		return nil, err
 	}
-	f := find.NewFinder(client.Client, true)
-	dc, err := f.DefaultDatacenter(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("finding datacenter: %w", err)
-	}
-	f.SetDatacenter(dc)
-	return f, nil
-}
 
-func (b *Backend) ListHosts(ctx context.Context) ([]manager.HostInfo, error) {
-	f, err := b.finder(ctx)
+	m := view.NewManager(client.Client)
+	v, err := m.CreateContainerView(ctx, client.ServiceContent.RootFolder, []string{"HostSystem"}, true)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("creating host container view: %w", err)
 	}
-	hosts, err := f.HostSystemList(ctx, "*")
-	if err != nil {
-		return nil, fmt.Errorf("listing hosts: %w", err)
-	}
-	props := []string{
+	defer v.Destroy(ctx)
+
+	var hosts []mo.HostSystem
+	err = v.Retrieve(ctx, []string{"HostSystem"}, []string{
 		"summary.config.name", "summary.runtime.connectionState",
 		"summary.runtime.powerState", "summary.hardware.cpuMhz",
 		"summary.hardware.numCpuCores", "summary.hardware.memorySize",
 		"summary.quickStats.overallCpuUsage", "summary.quickStats.overallMemoryUsage",
 		"vm",
+	}, &hosts)
+	if err != nil {
+		return nil, fmt.Errorf("listing hosts: %w", err)
 	}
+
 	out := make([]manager.HostInfo, 0, len(hosts))
-	for _, h := range hosts {
-		var obj mo.HostSystem
-		if err := h.Properties(ctx, h.Reference(), props, &obj); err != nil {
-			continue
-		}
+	for _, obj := range hosts {
 		s := obj.Summary
 		info := manager.HostInfo{
-			Ref:             h.Reference().Value,
+			Ref:             obj.Reference().Value,
 			VMCount:         len(obj.Vm),
 			ConnectionState: string(s.Runtime.ConnectionState),
 			PowerState:      string(s.Runtime.PowerState),
@@ -534,26 +516,31 @@ func (b *Backend) ListHosts(ctx context.Context) ([]manager.HostInfo, error) {
 }
 
 func (b *Backend) ListDatastores(ctx context.Context) ([]manager.DatastoreInfo, error) {
-	f, err := b.finder(ctx)
+	client, err := b.session.Client()
 	if err != nil {
 		return nil, err
 	}
-	datastores, err := f.DatastoreList(ctx, "*")
+
+	m := view.NewManager(client.Client)
+	v, err := m.CreateContainerView(ctx, client.ServiceContent.RootFolder, []string{"Datastore"}, true)
+	if err != nil {
+		return nil, fmt.Errorf("creating datastore container view: %w", err)
+	}
+	defer v.Destroy(ctx)
+
+	var datastores []mo.Datastore
+	err = v.Retrieve(ctx, []string{"Datastore"}, []string{
+		"summary.name", "summary.type",
+		"summary.capacity", "summary.freeSpace", "summary.accessible",
+	}, &datastores)
 	if err != nil {
 		return nil, fmt.Errorf("listing datastores: %w", err)
 	}
-	props := []string{
-		"summary.name", "summary.type",
-		"summary.capacity", "summary.freeSpace", "summary.accessible",
-	}
+
 	const gb = 1024 * 1024 * 1024
 	out := make([]manager.DatastoreInfo, 0, len(datastores))
-	for _, ds := range datastores {
-		var obj mo.Datastore
-		if err := ds.Properties(ctx, ds.Reference(), props, &obj); err != nil {
-			continue
-		}
-		info := manager.DatastoreInfo{Ref: ds.Reference().Value}
+	for _, obj := range datastores {
+		info := manager.DatastoreInfo{Ref: obj.Reference().Value}
 		if s := obj.Summary; s.Name != "" {
 			info.Name = s.Name
 			info.Type = s.Type
@@ -564,6 +551,198 @@ func (b *Backend) ListDatastores(ctx context.Context) ([]manager.DatastoreInfo, 
 		out = append(out, info)
 	}
 	return out, nil
+}
+
+func (b *Backend) ListNetworks(ctx context.Context) (manager.NetworkSummary, error) {
+	client, err := b.session.Client()
+	if err != nil {
+		return manager.NetworkSummary{}, err
+	}
+
+	vm := view.NewManager(client.Client)
+
+	// ── Step 1: All hosts → standard switches + standard port groups ──────────
+	hv, err := vm.CreateContainerView(ctx, client.ServiceContent.RootFolder, []string{"HostSystem"}, true)
+	if err != nil {
+		return manager.NetworkSummary{}, fmt.Errorf("host view: %w", err)
+	}
+	defer hv.Destroy(ctx)
+
+	var hosts []mo.HostSystem
+	if err := hv.Retrieve(ctx, []string{"HostSystem"}, []string{
+		"name",
+		"config.network.vswitch",
+		"config.network.portgroup",
+	}, &hosts); err != nil {
+		return manager.NetworkSummary{}, fmt.Errorf("fetching hosts: %w", err)
+	}
+
+	// hostNames: MOR value → display name
+	hostNames := make(map[string]string, len(hosts))
+	for _, h := range hosts {
+		hostNames[h.Reference().Value] = h.Name
+	}
+
+	// Accumulate standard switches: name → *SwitchInfo
+	stdSW := make(map[string]*manager.SwitchInfo)
+	// Accumulate standard PGs: switchName → pgName → *PortGroupInfo
+	stdPG := make(map[string]map[string]*manager.PortGroupInfo)
+
+	for _, h := range hosts {
+		hName := hostNames[h.Reference().Value]
+		if h.Config == nil || h.Config.Network == nil {
+			continue
+		}
+		for _, vsw := range h.Config.Network.Vswitch {
+			sw, ok := stdSW[vsw.Name]
+			if !ok {
+				sw = &manager.SwitchInfo{Name: vsw.Name, Type: "standard", MTU: vsw.Mtu}
+				stdSW[vsw.Name] = sw
+			}
+			sw.Hosts = appendUnique(sw.Hosts, hName)
+			if bridge, ok := vsw.Spec.Bridge.(*types.HostVirtualSwitchBondBridge); ok {
+				for _, nic := range bridge.NicDevice {
+					sw.Uplinks = appendUnique(sw.Uplinks, nic)
+				}
+			}
+		}
+		for _, pg := range h.Config.Network.Portgroup {
+			swName := pg.Spec.VswitchName
+			if stdPG[swName] == nil {
+				stdPG[swName] = make(map[string]*manager.PortGroupInfo)
+			}
+			info, ok := stdPG[swName][pg.Spec.Name]
+			if !ok {
+				info = &manager.PortGroupInfo{
+					Name: pg.Spec.Name,
+					VLAN: manager.FormatVLAN(pg.Spec.VlanId),
+				}
+				stdPG[swName][pg.Spec.Name] = info
+			}
+			info.Hosts = appendUnique(info.Hosts, hName)
+		}
+	}
+
+	// ── Step 2: Distributed virtual switches ──────────────────────────────────
+	dv, err := vm.CreateContainerView(ctx, client.ServiceContent.RootFolder, []string{"VmwareDistributedVirtualSwitch"}, true)
+	if err != nil {
+		return manager.NetworkSummary{}, fmt.Errorf("dvs view: %w", err)
+	}
+	defer dv.Destroy(ctx)
+
+	var dvSwitches []mo.VmwareDistributedVirtualSwitch
+	if err := dv.Retrieve(ctx, []string{"VmwareDistributedVirtualSwitch"}, []string{
+		"name", "config",
+	}, &dvSwitches); err != nil {
+		return manager.NetworkSummary{}, fmt.Errorf("fetching dvs: %w", err)
+	}
+
+	// dvsSW: DVS MOR value → *SwitchInfo
+	dvsSW := make(map[string]*manager.SwitchInfo, len(dvSwitches))
+
+	for i := range dvSwitches {
+		d := &dvSwitches[i]
+		ref := d.Reference().Value
+		sw := &manager.SwitchInfo{Name: d.Name, Type: "distributed"}
+
+		if cfg, ok := d.Config.(*types.VMwareDVSConfigInfo); ok {
+			sw.MTU = cfg.MaxMtu
+			if pol, ok := cfg.UplinkPortPolicy.(*types.DVSNameArrayUplinkPortPolicy); ok {
+				sw.Uplinks = pol.UplinkPortName
+			}
+		}
+		// Host membership is derived from port groups below, after pg.Host is fetched.
+		dvsSW[ref] = sw
+	}
+
+	// ── Step 3: DVS port groups ───────────────────────────────────────────────
+	pgv, err := vm.CreateContainerView(ctx, client.ServiceContent.RootFolder, []string{"DistributedVirtualPortgroup"}, true)
+	if err != nil {
+		return manager.NetworkSummary{}, fmt.Errorf("dvpg view: %w", err)
+	}
+	defer pgv.Destroy(ctx)
+
+	var dvPGs []mo.DistributedVirtualPortgroup
+	if err := pgv.Retrieve(ctx, []string{"DistributedVirtualPortgroup"}, []string{
+		"name", "config", "host", "vm",
+	}, &dvPGs); err != nil {
+		return manager.NetworkSummary{}, fmt.Errorf("fetching dvpgs: %w", err)
+	}
+
+	for _, pg := range dvPGs {
+		if pg.Config.DistributedVirtualSwitch == nil {
+			continue
+		}
+		swRef := pg.Config.DistributedVirtualSwitch.Value
+		sw, ok := dvsSW[swRef]
+		if !ok {
+			continue
+		}
+
+		vlan := "—"
+		if cfg, ok := pg.Config.DefaultPortConfig.(*types.VMwareDVSPortSetting); ok && cfg.Vlan != nil {
+			switch v := cfg.Vlan.(type) {
+			case *types.VmwareDistributedVirtualSwitchVlanIdSpec:
+				vlan = manager.FormatVLAN(v.VlanId)
+			case *types.VmwareDistributedVirtualSwitchTrunkVlanSpec:
+				vlan = "trunk"
+			case *types.VmwareDistributedVirtualSwitchPvlanSpec:
+				vlan = fmt.Sprintf("PVLAN %d", v.PvlanId)
+			}
+		}
+
+		pgInfo := manager.PortGroupInfo{
+			Name:    pg.Name,
+			VLAN:    vlan,
+			VMCount: len(pg.Vm),
+		}
+		for _, href := range pg.Host {
+			if name, ok := hostNames[href.Value]; ok {
+				pgInfo.Hosts = appendUnique(pgInfo.Hosts, name)
+			}
+		}
+		sw.PortGroups = append(sw.PortGroups, pgInfo)
+	}
+
+	// Derive DVS switch host lists from the union of their port groups' host membership.
+	// This is more reliable than reading cfg.Host, which requires a type assertion
+	// that can silently fail depending on how the config is deserialized.
+	for _, sw := range dvsSW {
+		for _, pg := range sw.PortGroups {
+			for _, h := range pg.Hosts {
+				sw.Hosts = appendUnique(sw.Hosts, h)
+			}
+		}
+	}
+
+	// ── Assemble result ───────────────────────────────────────────────────────
+	var switches []manager.SwitchInfo
+
+	// Standard switches (with their port groups)
+	for _, sw := range stdSW {
+		if pgs, ok := stdPG[sw.Name]; ok {
+			for _, pg := range pgs {
+				sw.PortGroups = append(sw.PortGroups, *pg)
+			}
+		}
+		switches = append(switches, *sw)
+	}
+	// Distributed switches
+	for _, sw := range dvsSW {
+		switches = append(switches, *sw)
+	}
+
+	return manager.NetworkSummary{Switches: switches}, nil
+}
+
+// appendUnique appends s to slice only if not already present.
+func appendUnique(slice []string, s string) []string {
+	for _, v := range slice {
+		if v == s {
+			return slice
+		}
+	}
+	return append(slice, s)
 }
 
 func (b *Backend) InstallTools(ctx context.Context, emit jobs.EmitFn, vmRef string) error {

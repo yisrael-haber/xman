@@ -100,6 +100,10 @@ func (a *App) OpenFileDialog(title string) (string, error) {
 	return runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{Title: title})
 }
 
+func (a *App) OpenDirectoryDialog(title string) (string, error) {
+	return runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{Title: title})
+}
+
 func (a *App) SaveFileDialog(title, defaultFilename string) (string, error) {
 	return runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
 		Title:           title,

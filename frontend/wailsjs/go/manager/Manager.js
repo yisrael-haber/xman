@@ -18,6 +18,10 @@ export function GuestRun(arg1) {
   return window['go']['manager']['Manager']['GuestRun'](arg1);
 }
 
+export function Install(arg1) {
+  return window['go']['manager']['Manager']['Install'](arg1);
+}
+
 export function InventoryDatastores() {
   return window['go']['manager']['Manager']['InventoryDatastores']();
 }
@@ -26,8 +30,16 @@ export function InventoryHosts() {
   return window['go']['manager']['Manager']['InventoryHosts']();
 }
 
+export function InventoryNetworks() {
+  return window['go']['manager']['Manager']['InventoryNetworks']();
+}
+
 export function SSHDownload(arg1) {
   return window['go']['manager']['Manager']['SSHDownload'](arg1);
+}
+
+export function SSHInstall(arg1) {
+  return window['go']['manager']['Manager']['SSHInstall'](arg1);
 }
 
 export function SSHRun(arg1) {

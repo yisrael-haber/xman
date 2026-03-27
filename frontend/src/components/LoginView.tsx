@@ -4,8 +4,10 @@ import {
     LoadConnectionSettings,
     SaveConnectionSettings,
     ClearConnectionSettings,
+    OpenDirectoryDialog,
 } from '../../wailsjs/go/main/App';
 import { config } from '../../wailsjs/go/models';
+import appIcon from '../assets/images/appicon.png';
 
 interface Props {
     onConnected: (info: config.ConnectionInfo) => void;
@@ -22,22 +24,24 @@ export default function LoginView({ onConnected }: Props) {
     const [loading, setLoading]   = useState(false);
     const [error, setError]       = useState('');
 
-    // Pre-populate fields from saved settings on mount.
+    // Pre-populate all fields from saved settings on mount.
+    // Both backends' fields are always restored so switching tabs shows saved data.
     useEffect(() => {
-        LoadConnectionSettings().then(s => {
-            if (!s.backendType) return;
-            setBackendType(s.backendType as 'vcenter' | 'workstation');
-            if (s.backendType === 'vcenter' && s.url) {
-                setUrl(s.url);
+        LoadConnectionSettings()
+            .then(s => {
+                if (!s || !s.backendType) return;
+                // vCenter fields
+                if (s.url) setUrl(s.url);
                 setUsername(s.username ?? '');
                 setInsecure(s.insecure ?? false);
-                setRemember(true);
                 if (s.password) setPassword(s.password);
-            } else if (s.backendType === 'workstation') {
-                if (s.vmDir) setVmDir(s.vmDir);
+                // Workstation fields
+                setVmDir(s.vmDir ?? '');
+                // Switch to last-used backend tab
+                setBackendType(s.backendType as 'vcenter' | 'workstation');
                 setRemember(true);
-            }
-        });
+            })
+            .catch(() => { /* settings not available */ });
     }, []);
 
     async function handleRememberToggle(checked: boolean) {
@@ -74,8 +78,10 @@ export default function LoginView({ onConnected }: Props) {
         if (remember) {
             try {
                 await SaveConnectionSettings(req);
-            } catch {
-                // intentionally ignored
+            } catch (saveErr: any) {
+                setLoading(false);
+                setError(`Connected OK, but settings could not be saved: ${String(saveErr)}`);
+                return; // stay on form so user sees the error; click Connect again to proceed
             }
         }
 
@@ -86,7 +92,7 @@ export default function LoginView({ onConnected }: Props) {
     return (
         <div className="login-backdrop">
             <div className="login-card">
-                <h1 className="login-title">xman</h1>
+                <img src={appIcon} alt="xman" className="login-logo" />
 
                 <div className="tab-bar" style={{margin: '0 -2.5rem 0.5rem', padding: '0 2.5rem', justifyContent: 'center'}}>
                     <button
@@ -160,14 +166,28 @@ export default function LoginView({ onConnected }: Props) {
                     {backendType === 'workstation' && (
                         <div className="field">
                             <label htmlFor="vmDir">VM folder (optional)</label>
-                            <input
-                                id="vmDir"
-                                type="text"
-                                value={vmDir}
-                                onChange={e => setVmDir(e.target.value)}
-                                placeholder="Leave blank to use default location"
-                                autoFocus
-                            />
+                            <div style={{ display: 'flex', gap: '0.4rem' }}>
+                                <input
+                                    id="vmDir"
+                                    type="text"
+                                    value={vmDir}
+                                    onChange={e => setVmDir(e.target.value)}
+                                    placeholder="Leave blank to use default location"
+                                    autoFocus
+                                    style={{ flex: 1 }}
+                                />
+                                <button
+                                    type="button"
+                                    className="icon-btn"
+                                    style={{ padding: '0 0.6rem', flexShrink: 0, fontSize: '0.8rem' }}
+                                    title="Browse for folder"
+                                    onClick={() =>
+                                        OpenDirectoryDialog('Select VM folder').then(p => { if (p) setVmDir(p); })
+                                    }
+                                >
+                                    Browse
+                                </button>
+                            </div>
                         </div>
                     )}
 

@@ -14,6 +14,10 @@ export function JobCancel(arg1) {
   return window['go']['jobs']['Manager']['JobCancel'](arg1);
 }
 
+export function JobDismiss(arg1) {
+  return window['go']['jobs']['Manager']['JobDismiss'](arg1);
+}
+
 export function JobGet(arg1) {
   return window['go']['jobs']['Manager']['JobGet'](arg1);
 }

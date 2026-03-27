@@ -227,11 +227,123 @@ export namespace manager {
 	        this.vmCount = source["vmCount"];
 	    }
 	}
+	export class InstallRequest {
+	    vmRef: string;
+	    username: string;
+	    password: string;
+	    localPath: string;
+	    guestOS: string;
+	    command: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new InstallRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.vmRef = source["vmRef"];
+	        this.username = source["username"];
+	        this.password = source["password"];
+	        this.localPath = source["localPath"];
+	        this.guestOS = source["guestOS"];
+	        this.command = source["command"];
+	    }
+	}
+	export class PortGroupInfo {
+	    name: string;
+	    vlan: string;
+	    vmCount: number;
+	    hosts: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new PortGroupInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.vlan = source["vlan"];
+	        this.vmCount = source["vmCount"];
+	        this.hosts = source["hosts"];
+	    }
+	}
+	export class SwitchInfo {
+	    name: string;
+	    type: string;
+	    mtu: number;
+	    uplinks: string[];
+	    hosts: string[];
+	    portGroups: PortGroupInfo[];
+	
+	    static createFrom(source: any = {}) {
+	        return new SwitchInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.type = source["type"];
+	        this.mtu = source["mtu"];
+	        this.uplinks = source["uplinks"];
+	        this.hosts = source["hosts"];
+	        this.portGroups = this.convertValues(source["portGroups"], PortGroupInfo);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class NetworkSummary {
+	    switches: SwitchInfo[];
+	
+	    static createFrom(source: any = {}) {
+	        return new NetworkSummary(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.switches = this.convertValues(source["switches"], SwitchInfo);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
 	export class RunRequest {
 	    vmRef: string;
 	    username: string;
 	    password: string;
 	    command: string;
+	    guestOS: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new RunRequest(source);
@@ -242,6 +354,31 @@ export namespace manager {
 	        this.vmRef = source["vmRef"];
 	        this.username = source["username"];
 	        this.password = source["password"];
+	        this.command = source["command"];
+	        this.guestOS = source["guestOS"];
+	    }
+	}
+	export class SSHInstallRequest {
+	    host: string;
+	    port: number;
+	    username: string;
+	    password: string;
+	    localPath: string;
+	    guestOS: string;
+	    command: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SSHInstallRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.host = source["host"];
+	        this.port = source["port"];
+	        this.username = source["username"];
+	        this.password = source["password"];
+	        this.localPath = source["localPath"];
+	        this.guestOS = source["guestOS"];
 	        this.command = source["command"];
 	    }
 	}
@@ -328,12 +465,14 @@ export namespace manager {
 		    return a;
 		}
 	}
+	
 	export class UploadRequest {
 	    vmRef: string;
 	    username: string;
 	    password: string;
 	    localPath: string;
 	    guestPath: string;
+	    guestOS: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new UploadRequest(source);
@@ -346,6 +485,7 @@ export namespace manager {
 	        this.password = source["password"];
 	        this.localPath = source["localPath"];
 	        this.guestPath = source["guestPath"];
+	        this.guestOS = source["guestOS"];
 	    }
 	}
 	export class VMInfo {

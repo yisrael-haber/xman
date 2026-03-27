@@ -1,6 +1,10 @@
 package manager
 
-import "fmt"
+import (
+	"context"
+
+	"xman/internal/jobs"
+)
 
 // VMInfo is a serialisable summary of a virtual machine.
 type VMInfo struct {
@@ -22,42 +26,46 @@ func (m *Manager) VMList() ([]VMInfo, error) {
 	return b.ListVMs(m.ctx)
 }
 
-func (m *Manager) VMPowerOn(vmRef string) error {
-	b, err := m.getBackend()
-	if err != nil {
-		return err
-	}
-	return b.PowerOn(m.ctx, vmRef)
+func (m *Manager) VMPowerOn(vmRef string) string {
+	return m.jobs.Submit("power", "Power On", func(ctx context.Context, emit jobs.EmitFn) error {
+		b, err := m.getBackend()
+		if err != nil {
+			return err
+		}
+		emit(10, "Powering on...")
+		return b.PowerOn(ctx, vmRef)
+	})
 }
 
-func (m *Manager) VMPowerOff(vmRef string) error {
-	b, err := m.getBackend()
-	if err != nil {
-		return err
-	}
-	return b.PowerOff(m.ctx, vmRef)
+func (m *Manager) VMPowerOff(vmRef string) string {
+	return m.jobs.Submit("power", "Power Off", func(ctx context.Context, emit jobs.EmitFn) error {
+		b, err := m.getBackend()
+		if err != nil {
+			return err
+		}
+		emit(10, "Powering off...")
+		return b.PowerOff(ctx, vmRef)
+	})
 }
 
-func (m *Manager) VMReset(vmRef string) error {
-	b, err := m.getBackend()
-	if err != nil {
-		return err
-	}
-	return b.Reset(m.ctx, vmRef)
+func (m *Manager) VMReset(vmRef string) string {
+	return m.jobs.Submit("power", "Reset", func(ctx context.Context, emit jobs.EmitFn) error {
+		b, err := m.getBackend()
+		if err != nil {
+			return err
+		}
+		emit(10, "Resetting...")
+		return b.Reset(ctx, vmRef)
+	})
 }
 
-func (m *Manager) VMSuspend(vmRef string) error {
-	b, err := m.getBackend()
-	if err != nil {
-		return err
-	}
-	return b.Suspend(m.ctx, vmRef)
+func (m *Manager) VMSuspend(vmRef string) string {
+	return m.jobs.Submit("power", "Suspend", func(ctx context.Context, emit jobs.EmitFn) error {
+		b, err := m.getBackend()
+		if err != nil {
+			return err
+		}
+		emit(10, "Suspending...")
+		return b.Suspend(ctx, vmRef)
+	})
 }
-
-// toolsReady is a shared helper used by the frontend-facing feature tabs.
-func toolsReady(status string) bool {
-	return status == "toolsOk" || status == "toolsOld"
-}
-
-// ErrGuestOpsUnavailable is returned when the backend does not support guest operations.
-var ErrGuestOpsUnavailable = fmt.Errorf("guest operations not supported by this backend")

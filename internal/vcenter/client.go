@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"net/url"
 	"sync"
+	"time"
 
 	"github.com/vmware/govmomi"
+	"github.com/vmware/govmomi/session"
 	"github.com/vmware/govmomi/vim25/soap"
 )
 
@@ -16,6 +18,7 @@ type Session struct {
 	mu     sync.RWMutex
 	client *govmomi.Client
 	host   string
+	params ConnectParams // stored for keep-alive reconnects
 }
 
 // ConnectParams holds the parameters needed to establish a vCenter connection.
@@ -48,6 +51,7 @@ func (s *Session) Connect(ctx context.Context, p ConnectParams) error {
 
 	s.client = c
 	s.host = u.Host
+	s.params = p
 	return nil
 }
 
@@ -82,4 +86,35 @@ func (s *Session) Host() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.host
+}
+
+// StartKeepAlive starts a background goroutine that pings vCenter every 10 minutes
+// and reconnects if the session has expired. ctx should be the Wails app context
+// so the goroutine exits cleanly on shutdown.
+func (s *Session) StartKeepAlive(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.mu.RLock()
+				client := s.client
+				params := s.params
+				s.mu.RUnlock()
+
+				if client == nil {
+					return
+				}
+
+				smgr := session.NewManager(client.Client)
+				if _, err := smgr.UserSession(ctx); err != nil {
+					// Session expired — attempt silent reconnect.
+					_ = s.Connect(ctx, params)
+				}
+			}
+		}
+	}()
 }

@@ -24,6 +24,15 @@ func dial(host string, port int, username, password string) (*ssh.Client, error)
 	return ssh.Dial("tcp", net.JoinHostPort(host, fmt.Sprintf("%d", port)), cfg)
 }
 
+// cancelOnContext closes client when ctx is cancelled, and stops when done is closed.
+func cancelOnContext(ctx context.Context, client *ssh.Client, done <-chan struct{}) {
+	select {
+	case <-ctx.Done():
+		client.Close()
+	case <-done:
+	}
+}
+
 func Run(ctx context.Context, emit jobs.EmitFn, host string, port int, username, password, command string) error {
 	emit(5, fmt.Sprintf("Connecting to %s:%d...", host, port))
 	client, err := dial(host, port, username, password)
@@ -32,11 +41,9 @@ func Run(ctx context.Context, emit jobs.EmitFn, host string, port int, username,
 	}
 	defer client.Close()
 
-	// Close the connection if the job is cancelled.
-	go func() {
-		<-ctx.Done()
-		client.Close()
-	}()
+	done := make(chan struct{})
+	defer close(done)
+	go cancelOnContext(ctx, client, done)
 
 	session, err := client.NewSession()
 	if err != nil {
@@ -72,7 +79,9 @@ func Upload(ctx context.Context, emit jobs.EmitFn, host string, port int, userna
 	}
 	defer client.Close()
 
-	go func() { <-ctx.Done(); client.Close() }()
+	done := make(chan struct{})
+	defer close(done)
+	go cancelOnContext(ctx, client, done)
 
 	sc, err := sftp.NewClient(client)
 	if err != nil {
@@ -109,7 +118,9 @@ func Download(ctx context.Context, emit jobs.EmitFn, host string, port int, user
 	}
 	defer client.Close()
 
-	go func() { <-ctx.Done(); client.Close() }()
+	done := make(chan struct{})
+	defer close(done)
+	go cancelOnContext(ctx, client, done)
 
 	sc, err := sftp.NewClient(client)
 	if err != nil {
