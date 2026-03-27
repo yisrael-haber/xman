@@ -44,9 +44,9 @@ export default function GuestExecTab({ vm, onJobStarted }: Props) {
         setError('');
         setBusy(true);
         const cmd = command.trim();
+        const idx = history.length;
         const entry: OutputEntry = { command: cmd, output: '', status: 'running' };
         setHistory(prev => [...prev, entry]);
-        const idx = history.length;
 
         try {
             let id: string;

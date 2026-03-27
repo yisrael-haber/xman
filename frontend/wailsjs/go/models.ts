@@ -363,6 +363,7 @@ export namespace manager {
 	    port: number;
 	    username: string;
 	    password: string;
+	    keyPath: string;
 	    localPath: string;
 	    guestOS: string;
 	    command: string;
@@ -377,6 +378,7 @@ export namespace manager {
 	        this.port = source["port"];
 	        this.username = source["username"];
 	        this.password = source["password"];
+	        this.keyPath = source["keyPath"];
 	        this.localPath = source["localPath"];
 	        this.guestOS = source["guestOS"];
 	        this.command = source["command"];
@@ -387,6 +389,7 @@ export namespace manager {
 	    port: number;
 	    username: string;
 	    password: string;
+	    keyPath: string;
 	    command: string;
 	
 	    static createFrom(source: any = {}) {
@@ -399,6 +402,7 @@ export namespace manager {
 	        this.port = source["port"];
 	        this.username = source["username"];
 	        this.password = source["password"];
+	        this.keyPath = source["keyPath"];
 	        this.command = source["command"];
 	    }
 	}
@@ -407,6 +411,7 @@ export namespace manager {
 	    port: number;
 	    username: string;
 	    password: string;
+	    keyPath: string;
 	    localPath: string;
 	    guestPath: string;
 	
@@ -420,6 +425,7 @@ export namespace manager {
 	        this.port = source["port"];
 	        this.username = source["username"];
 	        this.password = source["password"];
+	        this.keyPath = source["keyPath"];
 	        this.localPath = source["localPath"];
 	        this.guestPath = source["guestPath"];
 	    }

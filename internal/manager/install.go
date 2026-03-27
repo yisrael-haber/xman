@@ -31,17 +31,10 @@ type SSHInstallRequest struct {
 	Command   string `json:"command"` // empty = auto-detect from file extension
 }
 
-// isWin reports whether guestOS identifies a Windows guest.
-// Handles both VMX short IDs ("win10-64") and display names ("Microsoft Windows 10 (64-bit)").
-func isWin(guestOS string) bool {
-	lower := strings.ToLower(guestOS)
-	return strings.HasPrefix(lower, "win") || strings.Contains(lower, "windows")
-}
-
 // guestTempPath returns the path to upload the installer to on the guest.
 func guestTempPath(localPath, guestOS string) string {
 	filename := filepath.Base(localPath)
-	if isWin(guestOS) {
+	if IsWindows(guestOS) {
 		return `C:\Windows\Temp\` + filename
 	}
 	return "/tmp/" + filename
@@ -51,7 +44,7 @@ func guestTempPath(localPath, guestOS string) string {
 // Returns an error if the extension is unsupported or mismatched with the guest OS.
 func autoInstallCommand(localPath, guestPath, guestOS string) (string, error) {
 	ext := strings.ToLower(filepath.Ext(localPath))
-	win := isWin(guestOS)
+	win := IsWindows(guestOS)
 	switch ext {
 	case ".msi":
 		if !win {
@@ -87,7 +80,7 @@ func autoInstallCommand(localPath, guestPath, guestOS string) (string, error) {
 
 // cleanupCommand returns a best-effort command to delete the installer from the guest.
 func cleanupCommand(guestPath, guestOS string) string {
-	if isWin(guestOS) {
+	if IsWindows(guestOS) {
 		return fmt.Sprintf(`cmd /c del /f /q "%s"`, guestPath)
 	}
 	return fmt.Sprintf(`rm -f "%s"`, guestPath)

@@ -6,6 +6,13 @@ import (
 	"unicode/utf16"
 )
 
+// IsWindows reports whether guestOS identifies a Windows guest.
+// Handles both VMX short IDs ("win10-64") and display names ("Microsoft Windows 10 (64-bit)").
+func IsWindows(guestOS string) bool {
+	lower := strings.ToLower(guestOS)
+	return strings.HasPrefix(lower, "win") || strings.Contains(lower, "windows")
+}
+
 // WinPSExePath is the full path to powershell.exe inside Windows guests.
 const WinPSExePath = `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`
 

@@ -39,6 +39,16 @@ func FormatVLAN(id int32) string {
 	}
 }
 
+// AppendUnique appends s to slice only if not already present.
+func AppendUnique(slice []string, s string) []string {
+	for _, v := range slice {
+		if v == s {
+			return slice
+		}
+	}
+	return append(slice, s)
+}
+
 func (m *Manager) InventoryNetworks() (NetworkSummary, error) {
 	b, err := m.getBackend()
 	if err != nil {

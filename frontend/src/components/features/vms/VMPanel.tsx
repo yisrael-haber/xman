@@ -9,20 +9,21 @@ import GuestExecTab from './GuestExecTab';
 import RemoteInstallTab from './RemoteInstallTab';
 type TabID = 'info' | 'filetransfer' | 'snapshots' | 'exec' | 'install';
 
-const TABS: { id: TabID; label: string }[] = [
-    { id: 'info',         label: 'VM Info'      },
-    { id: 'snapshots',    label: 'Snapshots'    },
-    { id: 'exec',         label: 'Run Command'  },
-    { id: 'filetransfer', label: 'File Transfer' },
-    { id: 'install',      label: 'Install'       },
+const ALL_TABS: { id: TabID; label: string; requiresGuestOps?: boolean }[] = [
+    { id: 'info',         label: 'VM Info'       },
+    { id: 'snapshots',    label: 'Snapshots'     },
+    { id: 'exec',         label: 'Run Command',  requiresGuestOps: true },
+    { id: 'filetransfer', label: 'File Transfer', requiresGuestOps: true },
+    { id: 'install',      label: 'Install',       requiresGuestOps: true },
 ];
 
 interface Props {
     onJobStarted: (id: string) => void;
     toolsInstall: boolean;
+    guestOps: boolean;
 }
 
-export default function VMPanel({ onJobStarted, toolsInstall }: Props) {
+export default function VMPanel({ onJobStarted, toolsInstall, guestOps }: Props) {
     const [vms,      setVms]      = useState<manager.VMInfo[]>([]);
     const [selected, setSelected] = useState<manager.VMInfo | null>(null);
     const [loading,  setLoading]  = useState(false);
@@ -72,7 +73,7 @@ export default function VMPanel({ onJobStarted, toolsInstall }: Props) {
                 ) : (
                     <>
                         <div className="tab-bar">
-                            {TABS.map(tab => (
+                            {ALL_TABS.filter(t => !t.requiresGuestOps || guestOps).map(tab => (
                                 <button
                                     key={tab.id}
                                     className={`tab ${activeTab === tab.id ? 'tab--active' : ''}`}

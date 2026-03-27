@@ -262,14 +262,6 @@ func (b *Backend) DeleteSnapshot(ctx context.Context, emit jobs.EmitFn, snapRef 
 
 // --- Guest operations ---
 
-// isWindows returns true if the guest OS string indicates a Windows guest.
-// Handles both vCenter display names ("Microsoft Windows 10 (64-bit)")
-// and VMX short IDs ("win10-64").
-func isWindows(guestOS string) bool {
-	lower := strings.ToLower(guestOS)
-	return strings.HasPrefix(lower, "win") || strings.Contains(lower, "windows")
-}
-
 func (b *Backend) Upload(ctx context.Context, emit jobs.EmitFn, req manager.UploadRequest) error {
 	client, err := b.session.Client()
 	if err != nil {
@@ -298,7 +290,7 @@ func (b *Backend) Upload(ctx context.Context, emit jobs.EmitFn, req manager.Uplo
 
 	emit(10, "Initiating transfer to guest...")
 	var fileAttrs types.BaseGuestFileAttributes
-	if isWindows(req.GuestOS) {
+	if manager.IsWindows(req.GuestOS) {
 		fileAttrs = &types.GuestWindowsFileAttributes{}
 	} else {
 		fileAttrs = &types.GuestPosixFileAttributes{}
@@ -382,7 +374,7 @@ func (b *Backend) GuestRun(ctx context.Context, emit jobs.EmitFn, req manager.Ru
 	outName := fmt.Sprintf("exec_out_%d.txt", time.Now().UnixNano())
 	var outPath string
 	var spec types.GuestProgramSpec
-	if isWindows(req.GuestOS) {
+	if manager.IsWindows(req.GuestOS) {
 		outPath = `C:\Users\Public\` + outName
 		spec = types.GuestProgramSpec{
 			ProgramPath:      manager.WinPSExePath,
@@ -391,9 +383,12 @@ func (b *Backend) GuestRun(ctx context.Context, emit jobs.EmitFn, req manager.Ru
 		}
 	} else {
 		outPath = "/tmp/" + outName
+		// Escape single quotes in the command so the shell receives it as one
+		// argument: ' → '\'' (end quote, literal single quote, reopen quote).
+		escapedCmd := strings.ReplaceAll(req.Command, "'", `'\''`)
 		spec = types.GuestProgramSpec{
 			ProgramPath:      "/bin/sh",
-			Arguments:        fmt.Sprintf("-c '%s' > %s 2>&1", req.Command, outPath),
+			Arguments:        fmt.Sprintf("-c '%s > %s 2>&1'", escapedCmd, outPath),
 			WorkingDirectory: "/tmp",
 		}
 	}
@@ -599,10 +594,10 @@ func (b *Backend) ListNetworks(ctx context.Context) (manager.NetworkSummary, err
 				sw = &manager.SwitchInfo{Name: vsw.Name, Type: "standard", MTU: vsw.Mtu}
 				stdSW[vsw.Name] = sw
 			}
-			sw.Hosts = appendUnique(sw.Hosts, hName)
+			sw.Hosts = manager.AppendUnique(sw.Hosts, hName)
 			if bridge, ok := vsw.Spec.Bridge.(*types.HostVirtualSwitchBondBridge); ok {
 				for _, nic := range bridge.NicDevice {
-					sw.Uplinks = appendUnique(sw.Uplinks, nic)
+					sw.Uplinks = manager.AppendUnique(sw.Uplinks, nic)
 				}
 			}
 		}
@@ -619,7 +614,7 @@ func (b *Backend) ListNetworks(ctx context.Context) (manager.NetworkSummary, err
 				}
 				stdPG[swName][pg.Spec.Name] = info
 			}
-			info.Hosts = appendUnique(info.Hosts, hName)
+			info.Hosts = manager.AppendUnique(info.Hosts, hName)
 		}
 	}
 
@@ -698,7 +693,7 @@ func (b *Backend) ListNetworks(ctx context.Context) (manager.NetworkSummary, err
 		}
 		for _, href := range pg.Host {
 			if name, ok := hostNames[href.Value]; ok {
-				pgInfo.Hosts = appendUnique(pgInfo.Hosts, name)
+				pgInfo.Hosts = manager.AppendUnique(pgInfo.Hosts, name)
 			}
 		}
 		sw.PortGroups = append(sw.PortGroups, pgInfo)
@@ -710,7 +705,7 @@ func (b *Backend) ListNetworks(ctx context.Context) (manager.NetworkSummary, err
 	for _, sw := range dvsSW {
 		for _, pg := range sw.PortGroups {
 			for _, h := range pg.Hosts {
-				sw.Hosts = appendUnique(sw.Hosts, h)
+				sw.Hosts = manager.AppendUnique(sw.Hosts, h)
 			}
 		}
 	}
@@ -733,16 +728,6 @@ func (b *Backend) ListNetworks(ctx context.Context) (manager.NetworkSummary, err
 	}
 
 	return manager.NetworkSummary{Switches: switches}, nil
-}
-
-// appendUnique appends s to slice only if not already present.
-func appendUnique(slice []string, s string) []string {
-	for _, v := range slice {
-		if v == s {
-			return slice
-		}
-	}
-	return append(slice, s)
 }
 
 func (b *Backend) InstallTools(ctx context.Context, emit jobs.EmitFn, vmRef string) error {

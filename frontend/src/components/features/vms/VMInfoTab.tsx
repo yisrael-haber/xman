@@ -65,9 +65,16 @@ export default function VMInfoTab({ vm, onRefresh, onJobStarted, toolsInstall }:
         try {
             const jobId = await VMInstallTools(vm.ref);
             onJobStarted(jobId);
+            const unsub = EventsOn(`job:${jobId}`, (job: any) => {
+                if (job.status === 'done' || job.status === 'failed' || job.status === 'cancelled') {
+                    EventsOff(`job:${jobId}`);
+                    unsub();
+                    setToolsBusy(false);
+                    if (job.status === 'failed') setError(job.error || 'Tools installation failed');
+                }
+            });
         } catch (e: any) {
             setError(String(e));
-        } finally {
             setToolsBusy(false);
         }
     }

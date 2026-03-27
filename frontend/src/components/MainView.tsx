@@ -37,7 +37,7 @@ export default function MainView({ info, onDisconnect }: Props) {
 
                 <div className="feature-content">
                     {activeFeature === 'vms' && (
-                        <VMPanel onJobStarted={trackJob} toolsInstall={info.toolsInstall} />
+                        <VMPanel onJobStarted={trackJob} toolsInstall={info.toolsInstall} guestOps={info.guestOps} />
                     )}
                     {activeFeature === 'networks' && (
                         <NetworksPanel />

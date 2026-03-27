@@ -291,10 +291,9 @@ func splitSnapRef(ref string) (vmRef, snapName string) {
 // guestRunEnv returns whether the guest is Windows and a temp output path,
 // based on the guest OS string from the VMX or request.
 // Handles both VMX short IDs ("win10-64") and display names ("Microsoft Windows 10 (64-bit)").
-func guestRunEnv(guestOS string) (isWindows bool, outPath string) {
+func guestRunEnv(guestOS string) (isWin bool, outPath string) {
 	outName := fmt.Sprintf("exec_out_%d.txt", time.Now().UnixNano())
-	lower := strings.ToLower(guestOS)
-	if strings.HasPrefix(lower, "win") || strings.Contains(lower, "windows") {
+	if manager.IsWindows(guestOS) {
 		return true, `C:\Users\Public\` + outName
 	}
 	return false, "/tmp/" + outName
@@ -441,7 +440,7 @@ func (b *Backend) ListNetworks(_ context.Context) (manager.NetworkSummary, error
 				name = strings.TrimSuffix(filepath.Base(vmxPath), ".vmx")
 			}
 			for _, n := range vmxNetVMnets(vmxPath) {
-				vmnetVMs[n] = appendUniqStr(vmnetVMs[n], name)
+				vmnetVMs[n] = manager.AppendUnique(vmnetVMs[n], name)
 			}
 		}
 	}
@@ -550,15 +549,6 @@ func vmxNetVMnets(vmxPath string) []int {
 		}
 	}
 	return out
-}
-
-func appendUniqStr(slice []string, s string) []string {
-	for _, v := range slice {
-		if v == s {
-			return slice
-		}
-	}
-	return append(slice, s)
 }
 
 // parseVMnetNumber extracts the VMnet index from an interface name.

@@ -61,11 +61,11 @@ export default function SnapshotsTab({ vm, onJobStarted }: Props) {
     }
 
     function handleRevert(snapRef: string) {
-        SnapshotRevert(snapRef).then(trackAndReload);
+        SnapshotRevert(snapRef).then(trackAndReload).catch((e: any) => setError(String(e)));
     }
 
     function handleDelete(snapRef: string) {
-        SnapshotDelete(snapRef, false).then(trackAndReload);
+        SnapshotDelete(snapRef, false).then(trackAndReload).catch((e: any) => setError(String(e)));
     }
 
     return (
