@@ -14,6 +14,8 @@ export function DeleteSSHKey(arg1:string):Promise<void>;
 
 export function Disconnect():Promise<void>;
 
+export function LaunchInteractiveSSHSession(arg1:string,arg2:string):Promise<void>;
+
 export function ListSSHKeys():Promise<Array<config.KeyMeta>>;
 
 export function LoadConnectionSettings():Promise<config.ConnectRequest>;

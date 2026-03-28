@@ -1,7 +1,6 @@
 WAILS    := $(HOME)/go/bin/wails
 VCSIM    := ./build/bin/vcsim
 VCSIM_PID := /tmp/xman-vcsim.pid
-WINDOWS_DESKTOP ?= $(shell powershell.exe -NoProfile -Command "[Environment]::GetFolderPath('Desktop')" 2>/dev/null | tr -d '\r')
 
 .PHONY: dev build build-windows deploy-windows clean tidy vet test vcsim-build vcsim vcsim-bg vcsim-stop doctor help
 
@@ -23,7 +22,7 @@ build-windows:
 
 ## deploy-windows: build Windows .exe and copy to Windows desktop
 deploy-windows: build-windows
-	cp ./build/bin/xman.exe "$(WINDOWS_DESKTOP)"/
+	cp ./build/bin/xman.exe /mnt/c/Users/yisra/Desktop/
 
 ## clean: remove build output
 clean:

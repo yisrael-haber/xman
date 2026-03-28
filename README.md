@@ -34,6 +34,7 @@ Run Command is intentionally modeled as **separate shell sessions**, not a live 
 It also supports:
 - copy output to clipboard
 - cancel a running command without restarting the app
+- launch a real interactive SSH shell in the native OS terminal
 - background job tracking with detailed logs
 
 ### File Transfer
@@ -125,6 +126,8 @@ The app now uses a lightweight SSH model:
    - `host`
    - `key`
    - the key's default user
+
+For a true live shell, the Run Command tab can also launch the native OS terminal with the system `ssh` client and the selected private key.
 
 This avoids keeping per-VM deployment state in local config and keeps the runtime behavior predictable:
 - if the selected key works for `user@host`, SSH succeeds

@@ -6,7 +6,6 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -55,6 +54,41 @@ func privateKeyFilename(algorithm string) string {
 	}
 }
 
+func marshalOpenSSHPrivateKey(key any, comment string) ([]byte, error) {
+	block, err := ssh.MarshalPrivateKey(key, comment)
+	if err != nil {
+		return nil, err
+	}
+	return pem.EncodeToMemory(block), nil
+}
+
+func ensureNativeCompatiblePrivateKey(path, label string) error {
+	privBytes, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	if strings.Contains(string(privBytes), "BEGIN OPENSSH PRIVATE KEY") {
+		return nil
+	}
+
+	rawKey, err := ssh.ParseRawPrivateKey(privBytes)
+	if err != nil {
+		return fmt.Errorf("parsing legacy private key for %q: %w", label, err)
+	}
+
+	rewritten, err := marshalOpenSSHPrivateKey(rawKey, "xman:"+label)
+	if err != nil {
+		return fmt.Errorf("rewriting private key for %q to OpenSSH format: %w", label, err)
+	}
+
+	if err := os.WriteFile(path, rewritten, 0o600); err != nil {
+		return fmt.Errorf("writing upgraded private key for %q: %w", label, err)
+	}
+
+	return nil
+}
+
 // CreateKeyPair generates a new SSH key pair and stores it on disk under
 // the config dir at ssh-keys/<label>/.
 func CreateKeyPair(label, algorithm, defaultUser string) (KeyMeta, error) {
@@ -88,12 +122,11 @@ func CreateKeyPair(label, algorithm, defaultUser string) (KeyMeta, error) {
 			_ = os.RemoveAll(dir)
 			return KeyMeta{}, err
 		}
-		der, err := x509.MarshalPKCS8PrivateKey(priv)
+		privPEM, err = marshalOpenSSHPrivateKey(priv, "xman:"+label)
 		if err != nil {
 			_ = os.RemoveAll(dir)
 			return KeyMeta{}, err
 		}
-		privPEM = pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
 		pubKey, err = ssh.NewPublicKey(pub)
 		if err != nil {
 			_ = os.RemoveAll(dir)
@@ -107,10 +140,11 @@ func CreateKeyPair(label, algorithm, defaultUser string) (KeyMeta, error) {
 			_ = os.RemoveAll(dir)
 			return KeyMeta{}, err
 		}
-		privPEM = pem.EncodeToMemory(&pem.Block{
-			Type:  "RSA PRIVATE KEY",
-			Bytes: x509.MarshalPKCS1PrivateKey(priv),
-		})
+		privPEM, err = marshalOpenSSHPrivateKey(priv, "xman:"+label)
+		if err != nil {
+			_ = os.RemoveAll(dir)
+			return KeyMeta{}, err
+		}
 		pubKey, err = ssh.NewPublicKey(&priv.PublicKey)
 		if err != nil {
 			_ = os.RemoveAll(dir)
@@ -124,12 +158,11 @@ func CreateKeyPair(label, algorithm, defaultUser string) (KeyMeta, error) {
 			_ = os.RemoveAll(dir)
 			return KeyMeta{}, err
 		}
-		der, err := x509.MarshalECPrivateKey(priv)
+		privPEM, err = marshalOpenSSHPrivateKey(priv, "xman:"+label)
 		if err != nil {
 			_ = os.RemoveAll(dir)
 			return KeyMeta{}, err
 		}
-		privPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der})
 		pubKey, err = ssh.NewPublicKey(&priv.PublicKey)
 		if err != nil {
 			_ = os.RemoveAll(dir)
@@ -245,12 +278,52 @@ func LoadKeySigner(label string) (KeyMeta, ssh.Signer, error) {
 		return KeyMeta{}, nil, fmt.Errorf("reading private key for %q: %w", label, err)
 	}
 
+	if err := ensureNativeCompatiblePrivateKey(filepath.Join(dir, filename), label); err != nil {
+		return KeyMeta{}, nil, err
+	}
+
+	privPEM, err = os.ReadFile(filepath.Join(dir, filename))
+	if err != nil {
+		return KeyMeta{}, nil, fmt.Errorf("reading private key for %q after upgrade: %w", label, err)
+	}
+
 	signer, err := ssh.ParsePrivateKey(privPEM)
 	if err != nil {
 		return KeyMeta{}, nil, fmt.Errorf("parsing private key for %q: %w", label, err)
 	}
 
 	return meta, signer, nil
+}
+
+// PrivateKeyPath returns the stored private key path for label, along with its
+// metadata. This is used by external/native SSH launch flows that need the key
+// file on disk rather than an in-memory signer.
+func PrivateKeyPath(label string) (KeyMeta, string, error) {
+	meta, err := GetKey(label)
+	if err != nil {
+		return KeyMeta{}, "", err
+	}
+
+	dir, err := keyLabelDir(label)
+	if err != nil {
+		return KeyMeta{}, "", err
+	}
+
+	filename := privateKeyFilename(meta.Algorithm)
+	if filename == "" {
+		return KeyMeta{}, "", fmt.Errorf("key %q uses unsupported algorithm %q", label, meta.Algorithm)
+	}
+
+	path := filepath.Join(dir, filename)
+	if _, err := os.Stat(path); err != nil {
+		return KeyMeta{}, "", fmt.Errorf("private key for %q not found: %w", label, err)
+	}
+
+	if err := ensureNativeCompatiblePrivateKey(path, label); err != nil {
+		return KeyMeta{}, "", err
+	}
+
+	return meta, path, nil
 }
 
 // UpdateKeyDefaultUser rewrites the stored metadata for label with a new

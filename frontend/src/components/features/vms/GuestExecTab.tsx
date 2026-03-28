@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { manager } from '../../../../wailsjs/go/models';
 import { GuestRun, SSHRun } from '../../../../wailsjs/go/manager/Manager';
 import { JobCancel } from '../../../../wailsjs/go/jobs/Manager';
+import { LaunchInteractiveSSHSession } from '../../../../wailsjs/go/main/App';
 import { ClipboardSetText, EventsOn } from '../../../../wailsjs/runtime/runtime';
 import useSSHKeys from '../../../hooks/useSSHKeys';
 
@@ -54,6 +55,7 @@ export default function GuestExecTab({ vm, onJobStarted }: Props) {
     const [error,     setError]     = useState('');
     const [copied,    setCopied]    = useState(false);
     const [activeJobId, setActiveJobId] = useState('');
+    const [launchingSession, setLaunchingSession] = useState(false);
     const outputRef = useRef<HTMLDivElement>(null);
     const { keys, error: keysError } = useSSHKeys();
 
@@ -83,6 +85,7 @@ export default function GuestExecTab({ vm, onJobStarted }: Props) {
         setError('');
         setCopied(false);
         setActiveJobId('');
+        setLaunchingSession(false);
     }, [vm.ref]);
 
     const toolsOk = vm.toolsStatus === 'toolsOk' || vm.toolsStatus === 'toolsOld';
@@ -157,6 +160,19 @@ export default function GuestExecTab({ vm, onJobStarted }: Props) {
         void JobCancel(activeJobId);
     }
 
+    async function handleLaunchSession() {
+        if (!sshReady || mode !== 'ssh') return;
+        setError('');
+        setLaunchingSession(true);
+        try {
+            await LaunchInteractiveSSHSession(sshHost, keyLabel);
+        } catch (e: any) {
+            setError(String(e));
+        } finally {
+            setLaunchingSession(false);
+        }
+    }
+
     function handleKeyDown(e: React.KeyboardEvent) {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
@@ -177,10 +193,6 @@ export default function GuestExecTab({ vm, onJobStarted }: Props) {
                         onClick={() => setMode('vmware')}>VMware</button>
                     <button className={`mode-btn ${mode === 'ssh' ? 'mode-btn--active' : ''}`}
                         onClick={() => setMode('ssh')}>SSH</button>
-                </div>
-
-                <div className="exec-session-note">
-                    Each command runs in a fresh shell session. Output below replaces the previous run.
                 </div>
 
                 {mode === 'vmware' && !toolsOk && (
@@ -241,11 +253,31 @@ export default function GuestExecTab({ vm, onJobStarted }: Props) {
                                 The selected key has no default user. Set one in SSH Keys or choose a different key.
                             </div>
                         )}
+
+                        <div className="exec-live-session-panel">
+                            <div className="exec-live-session-copy">
+                                <span className="exec-live-session-title">Interactive SSH Session</span>
+                                <span className="exec-live-session-text">
+                                    Open your native terminal with a real SSH shell. This is separate from one-off command execution below.
+                                </span>
+                            </div>
+                            <button
+                                className="btn-secondary"
+                                onClick={() => void handleLaunchSession()}
+                                disabled={!sshReady || launchingSession}
+                            >
+                                {launchingSession ? 'Launching…' : 'Launch Interactive Session'}
+                            </button>
+                        </div>
                     </>
                 )}
             </div>
 
             <div className="exec-workspace">
+                <div className="exec-session-note">
+                    Each command runs in a fresh shell session. Output below replaces the previous run.
+                </div>
+
                 <div className="exec-shell-header">
                     <div className="exec-shell-meta">
                         <span className="exec-shell-title">Command Output</span>

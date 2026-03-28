@@ -1,5 +1,5 @@
 export namespace config {
-
+	
 	export class ConnectRequest {
 	    backendType: string;
 	    url: string;
@@ -8,11 +8,11 @@ export namespace config {
 	    insecure: boolean;
 	    vmrunPath: string;
 	    vmDir: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ConnectRequest(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.backendType = source["backendType"];
@@ -29,11 +29,11 @@ export namespace config {
 	    guestOps: boolean;
 	    inventory: boolean;
 	    toolsInstall: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ConnectionInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.displayName = source["displayName"];
@@ -47,11 +47,11 @@ export namespace config {
 	    algorithm: string;
 	    defaultUser: string;
 	    publicKey: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new KeyMeta(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.label = source["label"];
@@ -64,24 +64,24 @@ export namespace config {
 }
 
 export namespace jobs {
-
+	
 	export class LogEntry {
 	    progress: number;
 	    message: string;
 	    // Go type: time
 	    timestamp: any;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new LogEntry(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.progress = source["progress"];
 	        this.message = source["message"];
 	        this.timestamp = this.convertValues(source["timestamp"], null);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -113,11 +113,11 @@ export namespace jobs {
 	    startedAt: any;
 	    // Go type: time
 	    endedAt?: any;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new Job(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -131,7 +131,7 @@ export namespace jobs {
 	        this.startedAt = this.convertValues(source["startedAt"], null);
 	        this.endedAt = this.convertValues(source["endedAt"], null);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -154,18 +154,18 @@ export namespace jobs {
 }
 
 export namespace manager {
-
+	
 	export class CreateSnapshotRequest {
 	    vmRef: string;
 	    name: string;
 	    description: string;
 	    memory: boolean;
 	    quiesce: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new CreateSnapshotRequest(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.vmRef = source["vmRef"];
@@ -182,11 +182,11 @@ export namespace manager {
 	    capacityGB: number;
 	    freeGB: number;
 	    accessible: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new DatastoreInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.ref = source["ref"];
@@ -204,11 +204,11 @@ export namespace manager {
 	    username: string;
 	    password: string;
 	    guestOS: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new DeploySSHKeyRequest(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.label = source["label"];
@@ -225,11 +225,11 @@ export namespace manager {
 	    password: string;
 	    guestPath: string;
 	    localPath: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new DownloadRequest(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.vmRef = source["vmRef"];
@@ -249,11 +249,11 @@ export namespace manager {
 	    totalMemoryMB: number;
 	    usedMemoryMB: number;
 	    vmCount: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new HostInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.ref = source["ref"];
@@ -274,11 +274,11 @@ export namespace manager {
 	    localPath: string;
 	    guestOS: string;
 	    command: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new InstallRequest(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.vmRef = source["vmRef"];
@@ -294,11 +294,11 @@ export namespace manager {
 	    vlan: string;
 	    vmCount: number;
 	    hosts: string[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new PortGroupInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -314,11 +314,11 @@ export namespace manager {
 	    uplinks: string[];
 	    hosts: string[];
 	    portGroups: PortGroupInfo[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new SwitchInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -328,7 +328,7 @@ export namespace manager {
 	        this.hosts = source["hosts"];
 	        this.portGroups = this.convertValues(source["portGroups"], PortGroupInfo);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -349,16 +349,16 @@ export namespace manager {
 	}
 	export class NetworkSummary {
 	    switches: SwitchInfo[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new NetworkSummary(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.switches = this.convertValues(source["switches"], SwitchInfo);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -377,18 +377,18 @@ export namespace manager {
 		    return a;
 		}
 	}
-
+	
 	export class RunRequest {
 	    vmRef: string;
 	    username: string;
 	    password: string;
 	    command: string;
 	    guestOS: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new RunRequest(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.vmRef = source["vmRef"];
@@ -404,11 +404,11 @@ export namespace manager {
 	    localPath: string;
 	    guestOS: string;
 	    command: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new SSHInstallRequest(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.host = source["host"];
@@ -422,11 +422,11 @@ export namespace manager {
 	    host: string;
 	    keyLabel: string;
 	    command: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new SSHRunRequest(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.host = source["host"];
@@ -439,11 +439,11 @@ export namespace manager {
 	    keyLabel: string;
 	    localPath: string;
 	    guestPath: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new SSHTransferRequest(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.host = source["host"];
@@ -460,11 +460,11 @@ export namespace manager {
 	    createTime: any;
 	    isCurrent: boolean;
 	    depth: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new SnapshotInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.ref = source["ref"];
@@ -474,7 +474,7 @@ export namespace manager {
 	        this.isCurrent = source["isCurrent"];
 	        this.depth = source["depth"];
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -493,7 +493,7 @@ export namespace manager {
 		    return a;
 		}
 	}
-
+	
 	export class UploadRequest {
 	    vmRef: string;
 	    username: string;
@@ -501,11 +501,11 @@ export namespace manager {
 	    localPath: string;
 	    guestPath: string;
 	    guestOS: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new UploadRequest(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.vmRef = source["vmRef"];
@@ -525,11 +525,11 @@ export namespace manager {
 	    ipAddress: string;
 	    numCPU: number;
 	    memoryMB: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new VMInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.ref = source["ref"];

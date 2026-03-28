@@ -26,6 +26,10 @@ export function Disconnect() {
   return window['go']['main']['App']['Disconnect']();
 }
 
+export function LaunchInteractiveSSHSession(arg1, arg2) {
+  return window['go']['main']['App']['LaunchInteractiveSSHSession'](arg1, arg2);
+}
+
 export function ListSSHKeys() {
   return window['go']['main']['App']['ListSSHKeys']();
 }
