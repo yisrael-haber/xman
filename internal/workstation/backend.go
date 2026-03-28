@@ -882,10 +882,6 @@ func guestRunEnv(guestOS string) (isWin bool, outPath, pidPath string) {
 	return false, "/tmp/" + outName, "/tmp/" + pidName
 }
 
-func shQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
-
 func (b *Backend) cancelGuestRun(vmRef, username, password string, isWin bool, pidPath string) {
 	if strings.TrimSpace(pidPath) == "" {
 		return
@@ -901,7 +897,7 @@ func (b *Backend) cancelGuestRun(vmRef, username, password string, isWin bool, p
 		)
 		_, _ = b.runContext(killCtx, args...)
 	} else {
-		killCmd := fmt.Sprintf("test -f %s && kill $(cat %s) >/dev/null 2>&1 || true", shQuote(pidPath), shQuote(pidPath))
+		killCmd := fmt.Sprintf("test -f %s && kill $(cat %s) >/dev/null 2>&1 || true", manager.ShQuote(pidPath), manager.ShQuote(pidPath))
 		_, _ = b.runContext(killCtx, guest(username, password,
 			"runProgramInGuest", vmRef,
 			"/bin/sh", "-c", killCmd)...)
@@ -959,7 +955,7 @@ func (b *Backend) GuestRun(ctx context.Context, emit jobs.EmitFn, req manager.Ru
 		)
 		_, runErr = b.runContext(ctx, args...)
 	} else {
-		runCmd := fmt.Sprintf("printf '%%s' $$ > %s; exec %s > %s 2>&1", shQuote(pidPath), req.Command, shQuote(outPath))
+		runCmd := fmt.Sprintf("printf '%%s' $$ > %s; exec /bin/sh %s", manager.ShQuote(pidPath), manager.PosixCaptureArgs(req.Command, outPath))
 		_, runErr = b.runContext(ctx, guest(req.Username, req.Password,
 			"runProgramInGuest", req.VMRef,
 			"/bin/sh", "-c", runCmd)...)

@@ -3,6 +3,7 @@ package vcenter
 import (
 	"context"
 	"net/url"
+	"sort"
 	"strings"
 	"testing"
 
@@ -313,12 +314,36 @@ func TestInventoryLists(t *testing.T) {
 		if sw.Name == "" || sw.Type == "" {
 			t.Fatalf("ListNetworks() returned incomplete switch info: %+v", sw)
 		}
+		if !sort.StringsAreSorted(sw.Hosts) {
+			t.Fatalf("ListNetworks() returned unsorted switch hosts: %+v", sw.Hosts)
+		}
+		if !sort.StringsAreSorted(sw.Uplinks) {
+			t.Fatalf("ListNetworks() returned unsorted switch uplinks: %+v", sw.Uplinks)
+		}
+		portGroupNames := make([]string, 0, len(sw.PortGroups))
 		if len(sw.PortGroups) > 0 {
 			sawPortGroup = true
+		}
+		for _, pg := range sw.PortGroups {
+			portGroupNames = append(portGroupNames, pg.Name)
+			if !sort.StringsAreSorted(pg.Hosts) {
+				t.Fatalf("ListNetworks() returned unsorted port group hosts: %+v", pg.Hosts)
+			}
+		}
+		if !sort.StringsAreSorted(portGroupNames) {
+			t.Fatalf("ListNetworks() returned unsorted port groups: %+v", portGroupNames)
 		}
 	}
 	if !sawPortGroup {
 		t.Fatal("ListNetworks() returned switches without any port groups")
+	}
+
+	switchKeys := make([]string, 0, len(networks.Switches))
+	for _, sw := range networks.Switches {
+		switchKeys = append(switchKeys, sw.Type+":"+sw.Name)
+	}
+	if !sort.StringsAreSorted(switchKeys) {
+		t.Fatalf("ListNetworks() returned unsorted switches: %+v", switchKeys)
 	}
 }
 

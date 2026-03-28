@@ -4,7 +4,7 @@ VCSIM_PID := /tmp/xman-vcsim.pid
 GO_TEST_ENV := GOCACHE=/tmp/gocache GOTMPDIR=/tmp
 GO_TEST := $(GO_TEST_ENV) go test
 
-.PHONY: dev build build-windows deploy-windows clean tidy vet test test-go test-vcenter test-workstation test-workstation-integration test-frontend test-all vcsim-build vcsim vcsim-bg vcsim-stop doctor help
+.PHONY: dev build build-windows deploy-windows clean tidy vet test test-go test-go-cached test-vcenter test-vcenter-docker test-workstation test-workstation-integration test-frontend test-all test-all-cached vcsim-build vcsim vcsim-bg vcsim-stop doctor help
 
 ## help: list available targets
 help:
@@ -53,6 +53,11 @@ test-go-cached:
 ## test-vcenter: run only the vcsim-backed vCenter backend tests
 test-vcenter:
 	$(GO_TEST) -count=1 ./internal/vcenter
+
+## test-vcenter-docker: run opt-in docker-backed vCenter guest-ops integration tests
+## requires: docker available from Linux/WSL and pulls/runs debian:stable-slim for container-backed vcsim VMs
+test-vcenter-docker:
+	XMAN_DOCKER_GUESTOPS=1 $(GO_TEST) -count=1 ./internal/vcenter -run DockerGuestOps
 
 ## test-workstation: run Workstation backend unit and fake-vmrun tests
 test-workstation:

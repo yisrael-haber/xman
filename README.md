@@ -265,6 +265,7 @@ make test
 make test-go
 make test-go-cached
 make test-vcenter
+make test-vcenter-docker
 make test-workstation
 make test-workstation-integration
 make test-frontend
@@ -316,6 +317,7 @@ make test-all-cached
 
 # Focused backend runs
 make test-vcenter
+make test-vcenter-docker
 make test-workstation
 ```
 
@@ -333,6 +335,11 @@ What these do:
   - same as above, but allow Go to return cached package test results
 - `make test-vcenter`
   - runs only the `vCenter` backend tests
+- `make test-vcenter-docker`
+  - runs only the Docker-backed `vCenter` guest-ops integration tests
+  - covers stable guest-ops integration paths against container-backed `vcsim` VMs
+  - includes hard assertions for guest command success and guest file upload/download
+  - includes probe-style tests for cancellation and non-zero exit behavior, which intentionally skip with observations when `vcsim` does not surface those semantics reliably
 - `make test-workstation`
   - runs only the Workstation backend tests
 
@@ -361,6 +368,31 @@ Notes:
 - no `sudo` should be required for the normal test targets
 - the `vCenter` tests use a localhost `vcsim` server internally
 - the Workstation integration target should point at disposable or non-critical test VMs
+
+### Docker-backed vCenter Guest Ops Tests
+
+There is also an opt-in Docker-backed simulator target for `vCenter` guest-ops coverage:
+
+```bash
+make test-vcenter-docker
+```
+
+This target is intentionally separate from `make test` and `make test-all` so the default workflow stays fast and does not depend on Docker.
+
+It currently covers:
+- guest command success
+- guest file upload/download round-trips
+- explicit probe attempts for cancellation and non-zero exit behavior
+
+Notes:
+- the Docker-backed tests found and now protect a small guest-output download retry in the `vCenter` backend, which helps when process completion races slightly ahead of guest file visibility
+- cancellation and non-zero-exit probe cases are intentionally best-effort in this layer; they record what the simulator exposes instead of forcing simulator-specific behavior into the production backend
+- non-zero guest command exit semantics are still covered by the shared manager/unit tests rather than the Docker-backed `vcsim` layer, because the container guest-process simulator does not currently report those exit codes reliably
+
+Requirements:
+- Linux or WSL2
+- Docker available inside the distro (`docker info` must succeed)
+- ability to pull and run `debian:stable-slim` for the container-backed simulated VM
 
 ## Project Structure
 
@@ -426,7 +458,7 @@ Short-term backend coverage that is worth adding and maintaining:
 - `vCenter + vcsim`: connection/authentication, VM listing/details, power operations, snapshots, hosts, datastores, and network inventory
 - `Workstation + fake vmrun`: VM listing/details, power commands, snapshots, transfer flows, and guest command result handling without requiring a real VMware install
 - `Workstation + opt-in host integration`: smoke tests against a real `vmrun` and VM directory when running from WSL against a Windows host
-- `vCenter + vcsim + Docker`: guest command execution, guest file transfer, and cancellation flows against container-backed simulated VMs
+- `vCenter + vcsim + Docker`: stable guest command success coverage, guest file transfer, and probe coverage for cancellation / non-zero exit behavior against container-backed simulated VMs
 - `Manager` lifecycle tests: backend swap, disconnect, and connection-scoped job cancellation
 - Frontend state tests: jobs tracking, VM refresh coordination, and command-tab behavior around replace-vs-append output
 
@@ -462,7 +494,7 @@ Short-term backend coverage that is worth adding and maintaining:
 
 ### Testing Coverage
 - Expand the new `vCenter` `vcsim` suite to cover more negative paths and simulator fault injection
-- Add optional `vcsim + Docker` integration tests for guest ops flows in CI or WSL2 with Docker
+- Continue refining the optional `vcsim + Docker` guest-ops suite in CI or WSL2 with Docker, especially if simulator support for cancellation or exit codes improves
 - Add manager-level lifecycle tests for reconnect/disconnect/job cancellation semantics
 - Add manager-level shared tests for more guest-op/file/install edge cases as they appear in real bugs
 - Add frontend tests for jobs UI, command output replacement, and backend-aware VM tab behavior

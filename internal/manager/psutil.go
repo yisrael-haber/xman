@@ -13,6 +13,24 @@ func IsWindows(guestOS string) bool {
 	return strings.HasPrefix(lower, "win") || strings.Contains(lower, "windows")
 }
 
+// ShQuote quotes a string for safe inclusion as a single-quoted POSIX shell token.
+func ShQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// PosixCaptureScript returns a shell snippet that runs cmdLine, captures all
+// output to outPath, and preserves the command's exit code for compound shell
+// expressions as well as simple commands.
+func PosixCaptureScript(cmdLine, outPath string) string {
+	return "( " + cmdLine + " ) > " + ShQuote(outPath) + " 2>&1"
+}
+
+// PosixCaptureArgs returns an argument string suitable for `/bin/sh` where the
+// full cmdLine output is redirected to outPath.
+func PosixCaptureArgs(cmdLine, outPath string) string {
+	return "-c " + ShQuote(PosixCaptureScript(cmdLine, outPath))
+}
+
 // WinPSExePath is the full path to powershell.exe inside Windows guests.
 const WinPSExePath = `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`
 

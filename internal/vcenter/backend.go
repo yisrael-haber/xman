@@ -3,7 +3,7 @@ package vcenter
 import (
 	"context"
 	"fmt"
-	"net/url"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +12,7 @@ import (
 	"xman/internal/jobs"
 	"xman/internal/manager"
 
-	"github.com/vmware/govmomi/guest"
+	"github.com/vmware/govmomi/guest/toolbox"
 	"github.com/vmware/govmomi/object"
 	"github.com/vmware/govmomi/view"
 	"github.com/vmware/govmomi/vim25/methods"
@@ -283,30 +283,16 @@ func (b *Backend) DeleteSnapshot(ctx context.Context, emit jobs.EmitFn, snapRef 
 // --- Guest operations ---
 
 func (b *Backend) Upload(ctx context.Context, emit jobs.EmitFn, req manager.UploadRequest) error {
-	client, err := b.session.Client()
+	tools, err := b.newToolboxClient(ctx, req.VMRef, req.Username, req.Password)
 	if err != nil {
 		return err
 	}
-
-	ref := types.ManagedObjectReference{Type: "VirtualMachine", Value: req.VMRef}
-	ops := guest.NewOperationsManager(client.Client, ref)
-	fm, err := ops.FileManager(ctx)
-	if err != nil {
-		return fmt.Errorf("getting guest file manager: %w", err)
-	}
-
-	guestAuth := &types.NamePasswordAuthentication{Username: req.Username, Password: req.Password}
 
 	f, err := os.Open(req.LocalPath)
 	if err != nil {
 		return fmt.Errorf("opening local file: %w", err)
 	}
 	defer f.Close()
-
-	fi, err := f.Stat()
-	if err != nil {
-		return fmt.Errorf("stat local file: %w", err)
-	}
 
 	emit(10, "Copying file to guest...")
 	var fileAttrs types.BaseGuestFileAttributes
@@ -315,21 +301,8 @@ func (b *Backend) Upload(ctx context.Context, emit jobs.EmitFn, req manager.Uplo
 	} else {
 		fileAttrs = &types.GuestPosixFileAttributes{}
 	}
-	rawURL, err := fm.InitiateFileTransferToGuest(ctx, guestAuth, req.GuestPath,
-		fileAttrs, fi.Size(), true)
-	if err != nil {
-		return fmt.Errorf("initiating upload: %w", err)
-	}
-
-	transferURL, err := url.Parse(rawURL)
-	if err != nil {
-		return fmt.Errorf("parsing transfer URL: %w", err)
-	}
-
 	emit(20, fmt.Sprintf("Uploading %s...", filepath.Base(req.LocalPath)))
-	uploadParams := gsoap.DefaultUpload
-	uploadParams.ContentLength = fi.Size()
-	if err := client.Client.Upload(ctx, f, transferURL, &uploadParams); err != nil {
+	if err := tools.Upload(ctx, f, req.GuestPath, gsoap.DefaultUpload, fileAttrs, true); err != nil {
 		return fmt.Errorf("uploading file: %w", err)
 	}
 
@@ -338,34 +311,30 @@ func (b *Backend) Upload(ctx context.Context, emit jobs.EmitFn, req manager.Uplo
 }
 
 func (b *Backend) Download(ctx context.Context, emit jobs.EmitFn, req manager.DownloadRequest) error {
-	client, err := b.session.Client()
+	tools, err := b.newToolboxClient(ctx, req.VMRef, req.Username, req.Password)
 	if err != nil {
 		return err
 	}
 
-	ref := types.ManagedObjectReference{Type: "VirtualMachine", Value: req.VMRef}
-	ops := guest.NewOperationsManager(client.Client, ref)
-	fm, err := ops.FileManager(ctx)
-	if err != nil {
-		return fmt.Errorf("getting guest file manager: %w", err)
-	}
-
-	guestAuth := &types.NamePasswordAuthentication{Username: req.Username, Password: req.Password}
-
 	emit(10, "Copying file from guest...")
-	fileInfo, err := fm.InitiateFileTransferFromGuest(ctx, guestAuth, req.GuestPath)
+	src, _, err := tools.Download(ctx, req.GuestPath)
 	if err != nil {
-		return fmt.Errorf("initiating download: %w", err)
+		return fmt.Errorf("downloading file: %w", err)
 	}
+	defer src.Close()
 
-	transferURL, err := url.Parse(fileInfo.Url)
+	dst, err := os.Create(req.LocalPath)
 	if err != nil {
-		return fmt.Errorf("parsing transfer URL: %w", err)
+		return fmt.Errorf("creating local file: %w", err)
 	}
+	defer dst.Close()
 
 	emit(20, fmt.Sprintf("Downloading %s...", filepath.Base(req.GuestPath)))
-	if err := client.Client.DownloadFile(ctx, req.LocalPath, transferURL, nil); err != nil {
-		return fmt.Errorf("downloading file: %w", err)
+	if _, err := io.Copy(dst, src); err != nil {
+		return fmt.Errorf("writing local file: %w", err)
+	}
+	if err := dst.Close(); err != nil {
+		return fmt.Errorf("closing local file: %w", err)
 	}
 
 	emit(100, "Download complete.")
@@ -373,113 +342,32 @@ func (b *Backend) Download(ctx context.Context, emit jobs.EmitFn, req manager.Do
 }
 
 func (b *Backend) GuestRun(ctx context.Context, emit jobs.EmitFn, req manager.RunRequest) error {
-	client, err := b.session.Client()
+	tools, err := b.newToolboxClient(ctx, req.VMRef, req.Username, req.Password)
 	if err != nil {
 		return err
 	}
 
-	ref := types.ManagedObjectReference{Type: "VirtualMachine", Value: req.VMRef}
-	ops := guest.NewOperationsManager(client.Client, ref)
-	auth := &types.NamePasswordAuthentication{Username: req.Username, Password: req.Password}
-
-	pm, err := ops.ProcessManager(ctx)
-	if err != nil {
-		return fmt.Errorf("getting guest process manager: %w", err)
-	}
-	fm, err := ops.FileManager(ctx)
-	if err != nil {
-		return fmt.Errorf("getting guest file manager: %w", err)
-	}
-
-	outName := fmt.Sprintf("exec_out_%d.txt", time.Now().UnixNano())
-	var outPath string
-	var spec types.GuestProgramSpec
-	if manager.IsWindows(req.GuestOS) {
-		outPath = `C:\Users\Public\` + outName
-		spec = types.GuestProgramSpec{
-			ProgramPath:      manager.WinPSExePath,
-			Arguments:        manager.WinPSCmdArgs(req.Command, outPath),
-			WorkingDirectory: `C:\Users\Public`,
-		}
-	} else {
-		outPath = "/tmp/" + outName
-		// Escape single quotes in the command so the shell receives it as one
-		// argument: ' → '\'' (end quote, literal single quote, reopen quote).
-		escapedCmd := strings.ReplaceAll(req.Command, "'", `'\''`)
-		spec = types.GuestProgramSpec{
-			ProgramPath:      "/bin/sh",
-			Arguments:        fmt.Sprintf("-c '%s > %s 2>&1'", escapedCmd, outPath),
-			WorkingDirectory: "/tmp",
-		}
-	}
+	spec, outPath := buildGuestRunSpec(req)
 
 	emit(10, "Executing command...")
 
-	pid, err := pm.StartProgram(ctx, auth, &spec)
+	pid, err := tools.ProcessManager.StartProgram(ctx, tools.Authentication, &spec)
 	if err != nil {
 		return fmt.Errorf("starting command: %w", err)
 	}
 
-	deadline := time.Now().Add(5 * time.Minute)
-	var exitCode int32 = -1
-	for {
-		select {
-		case <-ctx.Done():
-			terminateGuestProcess(pm, auth, pid)
-			return ctx.Err()
-		default:
-		}
-		procs, err := pm.ListProcesses(ctx, auth, []int64{pid})
-		if err != nil {
-			return fmt.Errorf("checking process status: %w", err)
-		}
-		if len(procs) > 0 && procs[0].ExitCode != -1 {
-			exitCode = procs[0].ExitCode
-			break
-		}
-		if time.Now().After(deadline) {
-			terminateGuestProcess(pm, auth, pid)
-			return fmt.Errorf("timed out waiting for command to finish")
-		}
-		emit(50, "Waiting for command to finish...")
-		time.Sleep(1 * time.Second)
+	exitCode, err := waitForGuestProcess(ctx, emit, tools, pid)
+	if err != nil {
+		return err
 	}
 
 	emit(80, "Downloading output...")
-	fileInfo, err := fm.InitiateFileTransferFromGuest(ctx, auth, outPath)
+	data, err := downloadGuestFile(ctx, tools, outPath)
 	if err != nil {
-		return fmt.Errorf("initiating output download: %w", err)
-	}
-	transferURL, err := url.Parse(fileInfo.Url)
-	if err != nil {
-		return fmt.Errorf("parsing transfer URL: %w", err)
+		return err
 	}
 
-	tmpFile, err := os.CreateTemp("", "exec_out_*.txt")
-	if err != nil {
-		return fmt.Errorf("creating temp file: %w", err)
-	}
-	tmpPath := tmpFile.Name()
-	tmpFile.Close()
-	defer os.Remove(tmpPath)
-
-	if err := client.Client.DownloadFile(ctx, tmpPath, transferURL, nil); err != nil {
-		return fmt.Errorf("downloading output: %w", err)
-	}
-	_ = fm.DeleteFile(ctx, auth, outPath)
-
-	data, err := os.ReadFile(tmpPath)
-	if err != nil {
-		return fmt.Errorf("reading output: %w", err)
-	}
-
-	output := strings.TrimSpace(string(data))
-	if len(output) > 16*1024 {
-		output = output[:16*1024] + "\n[output truncated]"
-	}
-	if output == "" {
-		output = "(no output)"
-	}
+	output := normalizeGuestRunOutput(data)
 	if exitCode != 0 {
 		emit(95, fmt.Sprintf("%s\n\n[exit code: %d]", output, exitCode))
 		emit(100, "Command finished with non-zero exit status.")
@@ -490,10 +378,175 @@ func (b *Backend) GuestRun(ctx context.Context, emit jobs.EmitFn, req manager.Ru
 	return nil
 }
 
-func terminateGuestProcess(pm *guest.ProcessManager, auth types.BaseGuestAuthentication, pid int64) {
+func (b *Backend) newToolboxClient(ctx context.Context, vmRef, username, password string) (*toolbox.Client, error) {
+	client, err := b.session.Client()
+	if err != nil {
+		return nil, err
+	}
+
+	ref := types.ManagedObjectReference{Type: "VirtualMachine", Value: vmRef}
+	auth := &types.NamePasswordAuthentication{Username: username, Password: password}
+	tools, err := toolbox.NewClient(ctx, client.Client, ref, auth)
+	if err != nil {
+		return nil, fmt.Errorf("creating guest toolbox client: %w", err)
+	}
+	return tools, nil
+}
+
+func buildGuestRunSpec(req manager.RunRequest) (types.GuestProgramSpec, string) {
+	outName := fmt.Sprintf("exec_out_%d.txt", time.Now().UnixNano())
+	if manager.IsWindows(req.GuestOS) {
+		outPath := `C:\Users\Public\` + outName
+		return types.GuestProgramSpec{
+			ProgramPath:      manager.WinPSExePath,
+			Arguments:        manager.WinPSCmdArgs(req.Command, outPath),
+			WorkingDirectory: `C:\Users\Public`,
+		}, outPath
+	}
+
+	outPath := "/tmp/" + outName
+	return types.GuestProgramSpec{
+		ProgramPath:      "/bin/sh",
+		Arguments:        manager.PosixCaptureArgs(req.Command, outPath),
+		WorkingDirectory: "/tmp",
+	}, outPath
+}
+
+func waitForGuestProcess(ctx context.Context, emit jobs.EmitFn, tools *toolbox.Client, pid int64) (int32, error) {
+	deadline := time.Now().Add(5 * time.Minute)
+	for {
+		select {
+		case <-ctx.Done():
+			terminateGuestProcess(tools, pid)
+			return -1, ctx.Err()
+		default:
+		}
+
+		procs, err := tools.ProcessManager.ListProcesses(ctx, tools.Authentication, []int64{pid})
+		if err != nil {
+			return -1, fmt.Errorf("checking process status: %w", err)
+		}
+		if len(procs) > 0 && procs[0].ExitCode != -1 {
+			return procs[0].ExitCode, nil
+		}
+		if time.Now().After(deadline) {
+			terminateGuestProcess(tools, pid)
+			return -1, fmt.Errorf("timed out waiting for command to finish")
+		}
+
+		emit(50, "Waiting for command to finish...")
+		time.Sleep(1 * time.Second)
+	}
+}
+
+func downloadGuestFile(ctx context.Context, tools *toolbox.Client, guestPath string) ([]byte, error) {
+	deadline := time.Now().Add(3 * time.Second)
+	var lastErr error
+
+	for {
+		src, _, err := tools.Download(ctx, guestPath)
+		if err == nil {
+			defer src.Close()
+			data, readErr := io.ReadAll(src)
+			if readErr == nil {
+				_ = tools.FileManager.DeleteFile(ctx, tools.Authentication, guestPath)
+				return data, nil
+			}
+			lastErr = fmt.Errorf("reading output: %w", readErr)
+		} else {
+			lastErr = fmt.Errorf("downloading output: %w", err)
+		}
+
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if time.Now().After(deadline) {
+			return nil, lastErr
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+func normalizeGuestRunOutput(data []byte) string {
+	output := strings.TrimSpace(string(data))
+	if len(output) > 16*1024 {
+		output = output[:16*1024] + "\n[output truncated]"
+	}
+	if output == "" {
+		return "(no output)"
+	}
+	return output
+}
+
+func terminateGuestProcess(tools *toolbox.Client, pid int64) {
 	killCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_ = pm.TerminateProcess(killCtx, auth, pid)
+	_ = tools.ProcessManager.TerminateProcess(killCtx, tools.Authentication, pid)
+}
+
+type toolsInstallState struct {
+	guestOS     string
+	toolsStatus types.VirtualMachineToolsStatus
+	poweredOn   bool
+	hasGuest    bool
+}
+
+func readToolsInstallState(ctx context.Context, vm *object.VirtualMachine) (toolsInstallState, error) {
+	var obj mo.VirtualMachine
+	if err := vm.Properties(ctx, vm.Reference(), []string{"runtime.powerState", "guest.toolsStatus", "config.guestFullName"}, &obj); err != nil {
+		return toolsInstallState{}, fmt.Errorf("reading VM properties: %w", err)
+	}
+
+	state := toolsInstallState{
+		poweredOn: obj.Runtime.PowerState == types.VirtualMachinePowerStatePoweredOn,
+		hasGuest:  obj.Guest != nil,
+	}
+	if obj.Config != nil {
+		state.guestOS = obj.Config.GuestFullName
+	}
+	if obj.Guest != nil {
+		state.toolsStatus = obj.Guest.ToolsStatus
+	}
+
+	return state, nil
+}
+
+func validateToolsInstallState(state toolsInstallState) error {
+	if !state.poweredOn {
+		return fmt.Errorf("VM must be powered on to install VMware Tools")
+	}
+	if state.guestOS != "" && !manager.IsWindows(state.guestOS) {
+		return fmt.Errorf("bundled VMware Tools is not recommended for Linux/macOS guests; install open-vm-tools via the guest package manager instead")
+	}
+	return nil
+}
+
+func mountToolsInstaller(ctx context.Context, emit jobs.EmitFn, vm *object.VirtualMachine) error {
+	emit(10, "Mounting VMware Tools installer...")
+	if err := vm.MountToolsInstaller(ctx); err != nil {
+		return fmt.Errorf("mounting tools installer: %w", err)
+	}
+	emit(100, "VMware Tools ISO mounted. Open the CD-ROM drive inside the guest and run setup64.exe (or setup.exe on 32-bit) to complete installation.")
+	return nil
+}
+
+func upgradeTools(ctx context.Context, emit jobs.EmitFn, vm *object.VirtualMachine) error {
+	emit(10, "Requesting VMware Tools upgrade from vSphere...")
+	task, err := vm.UpgradeTools(ctx, "")
+	if err != nil {
+		emit(50, "Automatic upgrade unavailable — mounting VMware Tools installer...")
+		if mountErr := mountToolsInstaller(ctx, emit, vm); mountErr != nil {
+			return fmt.Errorf("upgrade tools: %w; mount installer fallback: %w", err, mountErr)
+		}
+		return nil
+	}
+
+	emit(50, "Installing VMware Tools, this may take a few minutes...")
+	if err := task.Wait(ctx); err != nil {
+		return fmt.Errorf("VMware Tools installation task failed: %w", err)
+	}
+	emit(100, "VMware Tools installed successfully.")
+	return nil
 }
 
 // --- Inventory ---
@@ -582,212 +635,21 @@ func (b *Backend) ListDatastores(ctx context.Context) ([]manager.DatastoreInfo, 
 	return out, nil
 }
 
-func (b *Backend) ListNetworks(ctx context.Context) (manager.NetworkSummary, error) {
-	client, err := b.session.Client()
-	if err != nil {
-		return manager.NetworkSummary{}, err
-	}
-
-	vm := view.NewManager(client.Client)
-
-	// ── Step 1: All hosts → standard switches + standard port groups ──────────
-	hv, err := vm.CreateContainerView(ctx, client.ServiceContent.RootFolder, []string{"HostSystem"}, true)
-	if err != nil {
-		return manager.NetworkSummary{}, fmt.Errorf("host view: %w", err)
-	}
-	defer hv.Destroy(ctx)
-
-	var hosts []mo.HostSystem
-	if err := hv.Retrieve(ctx, []string{"HostSystem"}, []string{
-		"name",
-		"config.network.vswitch",
-		"config.network.portgroup",
-	}, &hosts); err != nil {
-		return manager.NetworkSummary{}, fmt.Errorf("fetching hosts: %w", err)
-	}
-
-	// hostNames: MOR value → display name
-	hostNames := make(map[string]string, len(hosts))
-	for _, h := range hosts {
-		hostNames[h.Reference().Value] = h.Name
-	}
-
-	// Accumulate standard switches: name → *SwitchInfo
-	stdSW := make(map[string]*manager.SwitchInfo)
-	// Accumulate standard PGs: switchName → pgName → *PortGroupInfo
-	stdPG := make(map[string]map[string]*manager.PortGroupInfo)
-
-	for _, h := range hosts {
-		hName := hostNames[h.Reference().Value]
-		if h.Config == nil || h.Config.Network == nil {
-			continue
-		}
-		for _, vsw := range h.Config.Network.Vswitch {
-			sw, ok := stdSW[vsw.Name]
-			if !ok {
-				sw = &manager.SwitchInfo{Name: vsw.Name, Type: "standard", MTU: vsw.Mtu}
-				stdSW[vsw.Name] = sw
-			}
-			sw.Hosts = manager.AppendUnique(sw.Hosts, hName)
-			if bridge, ok := vsw.Spec.Bridge.(*types.HostVirtualSwitchBondBridge); ok {
-				for _, nic := range bridge.NicDevice {
-					sw.Uplinks = manager.AppendUnique(sw.Uplinks, nic)
-				}
-			}
-		}
-		for _, pg := range h.Config.Network.Portgroup {
-			swName := pg.Spec.VswitchName
-			if stdPG[swName] == nil {
-				stdPG[swName] = make(map[string]*manager.PortGroupInfo)
-			}
-			info, ok := stdPG[swName][pg.Spec.Name]
-			if !ok {
-				info = &manager.PortGroupInfo{
-					Name: pg.Spec.Name,
-					VLAN: manager.FormatVLAN(pg.Spec.VlanId),
-				}
-				stdPG[swName][pg.Spec.Name] = info
-			}
-			info.Hosts = manager.AppendUnique(info.Hosts, hName)
-		}
-	}
-
-	// ── Step 2: Distributed virtual switches ──────────────────────────────────
-	dv, err := vm.CreateContainerView(ctx, client.ServiceContent.RootFolder, []string{"VmwareDistributedVirtualSwitch"}, true)
-	if err != nil {
-		return manager.NetworkSummary{}, fmt.Errorf("dvs view: %w", err)
-	}
-	defer dv.Destroy(ctx)
-
-	var dvSwitches []mo.VmwareDistributedVirtualSwitch
-	if err := dv.Retrieve(ctx, []string{"VmwareDistributedVirtualSwitch"}, []string{
-		"name", "config",
-	}, &dvSwitches); err != nil {
-		return manager.NetworkSummary{}, fmt.Errorf("fetching dvs: %w", err)
-	}
-
-	// dvsSW: DVS MOR value → *SwitchInfo
-	dvsSW := make(map[string]*manager.SwitchInfo, len(dvSwitches))
-
-	for i := range dvSwitches {
-		d := &dvSwitches[i]
-		ref := d.Reference().Value
-		sw := &manager.SwitchInfo{Name: d.Name, Type: "distributed"}
-
-		if cfg, ok := d.Config.(*types.VMwareDVSConfigInfo); ok {
-			sw.MTU = cfg.MaxMtu
-			if pol, ok := cfg.UplinkPortPolicy.(*types.DVSNameArrayUplinkPortPolicy); ok {
-				sw.Uplinks = pol.UplinkPortName
-			}
-		}
-		// Host membership is derived from port groups below, after pg.Host is fetched.
-		dvsSW[ref] = sw
-	}
-
-	// ── Step 3: DVS port groups ───────────────────────────────────────────────
-	pgv, err := vm.CreateContainerView(ctx, client.ServiceContent.RootFolder, []string{"DistributedVirtualPortgroup"}, true)
-	if err != nil {
-		return manager.NetworkSummary{}, fmt.Errorf("dvpg view: %w", err)
-	}
-	defer pgv.Destroy(ctx)
-
-	var dvPGs []mo.DistributedVirtualPortgroup
-	if err := pgv.Retrieve(ctx, []string{"DistributedVirtualPortgroup"}, []string{
-		"name", "config", "host", "vm",
-	}, &dvPGs); err != nil {
-		return manager.NetworkSummary{}, fmt.Errorf("fetching dvpgs: %w", err)
-	}
-
-	for _, pg := range dvPGs {
-		if pg.Config.DistributedVirtualSwitch == nil {
-			continue
-		}
-		swRef := pg.Config.DistributedVirtualSwitch.Value
-		sw, ok := dvsSW[swRef]
-		if !ok {
-			continue
-		}
-
-		vlan := "—"
-		if cfg, ok := pg.Config.DefaultPortConfig.(*types.VMwareDVSPortSetting); ok && cfg.Vlan != nil {
-			switch v := cfg.Vlan.(type) {
-			case *types.VmwareDistributedVirtualSwitchVlanIdSpec:
-				vlan = manager.FormatVLAN(v.VlanId)
-			case *types.VmwareDistributedVirtualSwitchTrunkVlanSpec:
-				vlan = "trunk"
-			case *types.VmwareDistributedVirtualSwitchPvlanSpec:
-				vlan = fmt.Sprintf("PVLAN %d", v.PvlanId)
-			}
-		}
-
-		pgInfo := manager.PortGroupInfo{
-			Name:    pg.Name,
-			VLAN:    vlan,
-			VMCount: len(pg.Vm),
-		}
-		for _, href := range pg.Host {
-			if name, ok := hostNames[href.Value]; ok {
-				pgInfo.Hosts = manager.AppendUnique(pgInfo.Hosts, name)
-			}
-		}
-		sw.PortGroups = append(sw.PortGroups, pgInfo)
-	}
-
-	// Derive DVS switch host lists from the union of their port groups' host membership.
-	// This is more reliable than reading cfg.Host, which requires a type assertion
-	// that can silently fail depending on how the config is deserialized.
-	for _, sw := range dvsSW {
-		for _, pg := range sw.PortGroups {
-			for _, h := range pg.Hosts {
-				sw.Hosts = manager.AppendUnique(sw.Hosts, h)
-			}
-		}
-	}
-
-	// ── Assemble result ───────────────────────────────────────────────────────
-	var switches []manager.SwitchInfo
-
-	// Standard switches (with their port groups)
-	for _, sw := range stdSW {
-		if pgs, ok := stdPG[sw.Name]; ok {
-			for _, pg := range pgs {
-				sw.PortGroups = append(sw.PortGroups, *pg)
-			}
-		}
-		switches = append(switches, *sw)
-	}
-	// Distributed switches
-	for _, sw := range dvsSW {
-		switches = append(switches, *sw)
-	}
-
-	return manager.NetworkSummary{Switches: switches}, nil
-}
-
 func (b *Backend) InstallTools(ctx context.Context, emit jobs.EmitFn, vmRef string) error {
 	vm, err := b.vmObject(ctx, vmRef)
 	if err != nil {
 		return err
 	}
 
-	var obj mo.VirtualMachine
-	if err := vm.Properties(ctx, vm.Reference(), []string{"runtime.powerState", "guest.toolsStatus", "config.guestFullName"}, &obj); err != nil {
-		return fmt.Errorf("reading VM properties: %w", err)
+	state, err := readToolsInstallState(ctx, vm)
+	if err != nil {
+		return err
+	}
+	if err := validateToolsInstallState(state); err != nil {
+		return err
 	}
 
-	if obj.Runtime.PowerState != types.VirtualMachinePowerStatePoweredOn {
-		return fmt.Errorf("VM must be powered on to install VMware Tools")
-	}
-
-	guestOS := ""
-	if obj.Config != nil {
-		guestOS = obj.Config.GuestFullName
-	}
-	if guestOS != "" && !manager.IsWindows(guestOS) {
-		return fmt.Errorf("bundled VMware Tools is not recommended for Linux/macOS guests; install open-vm-tools via the guest package manager instead")
-	}
-
-	if obj.Guest != nil && obj.Guest.ToolsStatus == types.VirtualMachineToolsStatusToolsOk {
+	if state.hasGuest && state.toolsStatus == types.VirtualMachineToolsStatusToolsOk {
 		emit(100, "VMware Tools are already up to date.")
 		return nil
 	}
@@ -795,30 +657,9 @@ func (b *Backend) InstallTools(ctx context.Context, emit jobs.EmitFn, vmRef stri
 	// UpgradeTools requires a running guest agent. On a fresh VM with no tools
 	// installed it would create a task that blocks indefinitely. Mount the ISO
 	// directly and let the user run the installer.
-	if obj.Guest == nil || obj.Guest.ToolsStatus == types.VirtualMachineToolsStatusToolsNotInstalled {
-		emit(10, "Mounting VMware Tools installer...")
-		if err := vm.MountToolsInstaller(ctx); err != nil {
-			return fmt.Errorf("mounting tools installer: %w", err)
-		}
-		emit(100, "VMware Tools ISO mounted. Open the CD-ROM drive inside the guest and run setup64.exe (or setup.exe on 32-bit) to complete installation.")
-		return nil
+	if !state.hasGuest || state.toolsStatus == types.VirtualMachineToolsStatusToolsNotInstalled {
+		return mountToolsInstaller(ctx, emit, vm)
 	}
 
-	emit(10, "Requesting VMware Tools upgrade from vSphere...")
-	task, err := vm.UpgradeTools(ctx, "")
-	if err != nil {
-		emit(50, "Automatic upgrade unavailable — mounting VMware Tools installer...")
-		if mountErr := vm.MountToolsInstaller(ctx); mountErr != nil {
-			return fmt.Errorf("upgrade tools: %w; mount installer fallback: %w", err, mountErr)
-		}
-		emit(100, "VMware Tools ISO mounted. Open the CD-ROM drive inside the guest and run setup64.exe (or setup.exe on 32-bit) to complete installation.")
-		return nil
-	}
-
-	emit(50, "Installing VMware Tools, this may take a few minutes...")
-	if err := task.Wait(ctx); err != nil {
-		return fmt.Errorf("VMware Tools installation task failed: %w", err)
-	}
-	emit(100, "VMware Tools installed successfully.")
-	return nil
+	return upgradeTools(ctx, emit, vm)
 }
