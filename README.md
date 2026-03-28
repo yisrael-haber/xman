@@ -1,5 +1,7 @@
 # xman
 
+Unified desktop console for VMware VM lifecycle, guest operations, and SSH workflows.
+
 `xman` is a native desktop application for day-to-day VMware management. It is built with Go and Wails and currently supports both **vCenter** and **VMware Workstation** backends.
 
 The app is meant to make common operator workflows fast:
@@ -11,6 +13,20 @@ The app is meant to make common operator workflows fast:
 - install packages remotely
 - inspect inventory and networks
 
+It is designed for operators who routinely bounce between hypervisor actions and in-guest actions and want those workflows in one place instead of split across the vSphere Client, Workstation UI, SSH terminals, and ad hoc scripts.
+
+## Project Status
+
+`xman` is currently best described as a serious internal operator tool rather than a fully hardened enterprise product.
+
+Today it is strongest for:
+- individual operators
+- homelabs and lab environments
+- small infrastructure/platform teams
+- controlled internal use on known environments
+
+The core workflows are in good shape, the codebase has meaningful automated coverage, and the app is already useful in practice. At the same time, environment-specific validation, security hardening, and broader distribution polish are still ongoing.
+
 ## Highlights
 
 ### VM Management
@@ -19,14 +35,15 @@ The app is meant to make common operator workflows fast:
 - Keep job completion and VM state refresh synchronized
 
 ### Snapshots
-- List snapshots with creation time and tree depth
-- Create snapshots with optional description, memory capture, and quiesce support
+- List snapshots with creation time and tree depth when the backend provides them
+- Create snapshots on both backends
+- On vCenter, snapshots also support description, memory capture, and quiesce options
 - Revert to or delete snapshots
 
 ### Run Command
 Run commands inside a guest VM using two transports:
 
-- **VMware Guest Operations**: requires VMware Tools plus guest username/password
+- **Guest Ops**: requires VMware Tools plus guest username/password
 - **SSH**: uses `host + SSH key` only; the SSH username comes from the selected key's default user
 
 Run Command is intentionally modeled as **separate shell sessions**, not a live terminal. Each new command replaces the previous output in the command pane.
@@ -37,10 +54,17 @@ It also supports:
 - launch a real interactive SSH shell in the native OS terminal
 - background job tracking with detailed logs
 
+The interactive SSH launcher uses:
+- the selected key's private key file
+- the key's default SSH user
+- the native `ssh` client and terminal on the host OS
+
+It is intentionally separate from the in-app command console.
+
 ### File Transfer
 Upload and download files to or from a guest VM using:
 
-- **VMware Guest Operations**
+- **Guest Ops**
 - **SSH / SFTP**
 
 For SSH / SFTP, the app uses a stored private key plus that key's default user. Guest passwords are not used for day-to-day SSH transfers.
@@ -84,8 +108,9 @@ Available on **vCenter**:
 
 ### VMware Tools Management
 - Install or upgrade VMware Tools on Windows guests
-- On vCenter: trigger built-in Tools upgrade
+- On vCenter: trigger built-in Tools upgrade when available, otherwise mount the Tools ISO
 - On Workstation: mount the bundled Tools ISO and start installation
+- For Linux and macOS guests, use `open-vm-tools` from the guest OS package manager
 
 ### Job Tracking
 Long-running operations are tracked as jobs with:
@@ -103,17 +128,18 @@ Long-running operations are tracked as jobs with:
 | VM listing               | ✓       | ✓           |
 | Power operations         | ✓       | ✓           |
 | Snapshots                | ✓       | ✓           |
-| Run Command (VMware)     | ✓       | ✓           |
+| Run Command (Guest Ops)  | ✓       | ✓           |
 | Run Command (SSH)        | ✓       | ✓           |
-| File Transfer (VMware)   | ✓       | ✓           |
+| File Transfer (Guest Ops)| ✓       | ✓           |
 | File Transfer (SSH/SFTP) | ✓       | ✓           |
 | Remote Install           | ✓       | ✓           |
 | Deploy SSH Key           | ✓       | ✓           |
 | Networks view            | ✓       | ✓           |
 | Host inventory           | ✓       | —           |
 | Datastore inventory      | ✓       | —           |
-| Tools auto-upgrade       | ✓       | —           |
-| Tools ISO install        | —       | ✓ (Windows) |
+| Snapshot description / quiesce / memory options | ✓ | — |
+| Tools auto-upgrade       | ✓ (Windows) | —       |
+| Tools ISO install        | ✓ (fallback, Windows) | ✓ (Windows) |
 
 ## How SSH Works
 
@@ -133,9 +159,9 @@ This avoids keeping per-VM deployment state in local config and keeps the runtim
 - if the selected key works for `user@host`, SSH succeeds
 - if it does not, SSH fails cleanly
 
-## VMware Guest Operations Requirements
+## Guest Ops Requirements
 
-VMware transport for Run Command, File Transfer, and Remote Install requires:
+Guest Ops transport for Run Command, File Transfer, and Remote Install requires:
 - VMware Tools or open-vm-tools installed and running
 - guest OS credentials
 - on vCenter, guest operations privileges on the VM
@@ -236,6 +262,14 @@ make dev
 make build
 make build-windows
 make test
+make test-go
+make test-go-cached
+make test-vcenter
+make test-workstation
+make test-workstation-integration
+make test-frontend
+make test-all
+make test-all-cached
 make vet
 ```
 
@@ -262,6 +296,71 @@ xman_log_YYYYMMDD_HHMMSS.txt
 ```
 
 This is mainly intended for debugging Workstation refresh behavior and can be expanded further later.
+
+## Testing
+
+The current test strategy is intentionally split into fast local tests and opt-in environment-backed tests.
+
+Recommended commands:
+
+```bash
+# Default uncached Go test run
+make test
+
+# Full validation pass: uncached Go tests + frontend production build
+make test-all
+
+# Faster reruns when you explicitly want Go's test cache
+make test-go-cached
+make test-all-cached
+
+# Focused backend runs
+make test-vcenter
+make test-workstation
+```
+
+What these do:
+
+- `make test`
+  - runs all Go tests with `-count=1`
+  - includes manager tests
+  - includes `vCenter` tests backed by `vcsim`
+  - includes Workstation tests backed by pure helpers and a fake `vmrun`
+- `make test-all`
+  - runs the same uncached Go suite
+  - also runs `cd frontend && npm run build`
+- `make test-go-cached` / `make test-all-cached`
+  - same as above, but allow Go to return cached package test results
+- `make test-vcenter`
+  - runs only the `vCenter` backend tests
+- `make test-workstation`
+  - runs only the Workstation backend tests
+
+Important note:
+
+- use `make test-all`, not `make test all`
+
+### Workstation Integration Tests
+
+There is also an opt-in smoke test target for a real VMware Workstation setup reachable from WSL:
+
+```bash
+XMAN_WS_VMRUN='/mnt/c/Program Files (x86)/VMware/VMware Workstation/vmrun.exe' \
+XMAN_WS_VM_DIR='/mnt/c/path/to/test/vms' \
+make test-workstation-integration
+```
+
+This target is intentionally not part of the normal suite.
+
+It is meant for:
+- validating real `vmrun` invocation from WSL
+- listing real VMs from a dedicated test directory
+- smoke-testing the Workstation environment without requiring it for every run
+
+Notes:
+- no `sudo` should be required for the normal test targets
+- the `vCenter` tests use a localhost `vcsim` server internally
+- the Workstation integration target should point at disposable or non-critical test VMs
 
 ## Project Structure
 
@@ -304,7 +403,13 @@ xman/
 Before check-in, a healthy local validation pass is:
 
 ```bash
-GOCACHE=/tmp/gocache GOTMPDIR=/tmp go test ./...
+make test-all
+```
+
+If you prefer the raw commands, the equivalent is:
+
+```bash
+GOCACHE=/tmp/gocache GOTMPDIR=/tmp go test -count=1 ./...
 cd frontend && npm run build
 ```
 
@@ -313,6 +418,17 @@ If you are touching packaging or generated bindings, also verify:
 ```bash
 make build-windows
 ```
+
+## Testing Roadmap
+
+Short-term backend coverage that is worth adding and maintaining:
+
+- `vCenter + vcsim`: connection/authentication, VM listing/details, power operations, snapshots, hosts, datastores, and network inventory
+- `Workstation + fake vmrun`: VM listing/details, power commands, snapshots, transfer flows, and guest command result handling without requiring a real VMware install
+- `Workstation + opt-in host integration`: smoke tests against a real `vmrun` and VM directory when running from WSL against a Windows host
+- `vCenter + vcsim + Docker`: guest command execution, guest file transfer, and cancellation flows against container-backed simulated VMs
+- `Manager` lifecycle tests: backend swap, disconnect, and connection-scoped job cancellation
+- Frontend state tests: jobs tracking, VM refresh coordination, and command-tab behavior around replace-vs-append output
 
 ## Future Work / TODO
 
@@ -343,3 +459,11 @@ make build-windows
 
 ### Multi-Connection
 - Connect to multiple backends simultaneously in one app session
+
+### Testing Coverage
+- Expand the new `vCenter` `vcsim` suite to cover more negative paths and simulator fault injection
+- Add optional `vcsim + Docker` integration tests for guest ops flows in CI or WSL2 with Docker
+- Add manager-level lifecycle tests for reconnect/disconnect/job cancellation semantics
+- Add manager-level shared tests for more guest-op/file/install edge cases as they appear in real bugs
+- Add frontend tests for jobs UI, command output replacement, and backend-aware VM tab behavior
+- Maintain a small real-`vCenter` manual checklist for VMware Tools, Windows guest ops, and privilege-sensitive paths

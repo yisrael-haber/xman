@@ -14,6 +14,7 @@ This directory contains packaging assets and generated build output used by Wail
 - `bin/` is disposable build output
 - the platform asset directories are safe to customize if you need installer or metadata changes
 - if you want to reset platform packaging files back to Wails defaults, delete the customized files and rebuild with `wails build`
+- from WSL, the main Windows packaging workflow is `make build-windows` or `make deploy-windows`
 
 ## Windows
 

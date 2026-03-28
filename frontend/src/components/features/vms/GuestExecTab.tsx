@@ -190,14 +190,14 @@ export default function GuestExecTab({ vm, onJobStarted }: Props) {
             <div className="form-section exec-credentials">
                 <div className="mode-toggle" style={{ alignSelf: 'center' }}>
                     <button className={`mode-btn ${mode === 'vmware' ? 'mode-btn--active' : ''}`}
-                        onClick={() => setMode('vmware')}>VMware</button>
+                        onClick={() => setMode('vmware')}>Guest Ops</button>
                     <button className={`mode-btn ${mode === 'ssh' ? 'mode-btn--active' : ''}`}
                         onClick={() => setMode('ssh')}>SSH</button>
                 </div>
 
                 {mode === 'vmware' && !toolsOk && (
                     <div className="notice notice--warn">
-                        VMware Tools are not running. Switch to SSH or start Tools to run commands.
+                        Guest operations require VMware Tools to be running. Switch to SSH or start Tools to run commands.
                     </div>
                 )}
 

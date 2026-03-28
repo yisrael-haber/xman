@@ -112,7 +112,7 @@ export default function RemoteInstallTab({ vm, onJobStarted }: Props) {
             <div className="form-section tab-stack" style={{ flexShrink: 0 }}>
                 <div className="mode-toggle" style={{ alignSelf: 'center' }}>
                     <button className={`mode-btn ${mode === 'vmware' ? 'mode-btn--active' : ''}`}
-                        onClick={() => setMode('vmware')}>VMware</button>
+                        onClick={() => setMode('vmware')}>Guest Ops</button>
                     <button className={`mode-btn ${mode === 'ssh' ? 'mode-btn--active' : ''}`}
                         onClick={() => setMode('ssh')}>SSH / SFTP</button>
                 </div>
@@ -174,7 +174,7 @@ export default function RemoteInstallTab({ vm, onJobStarted }: Props) {
 
                 {mode === 'vmware' && !toolsOk && (
                     <div className="notice notice--warn">
-                        VMware Tools are not running. Switch to SSH/SFTP or start Tools to install packages.
+                        Guest operations require VMware Tools to be running. Switch to SSH/SFTP or start Tools to install packages.
                     </div>
                 )}
             </div>

@@ -8,6 +8,7 @@ interface Props {
     onRefresh: () => Promise<void>;
     onJobStarted: (id: string, targetName?: string) => void;
     toolsInstall: boolean;
+    backendType: string;
 }
 
 const TOOLS_LABELS: Record<string, { label: string; ok: boolean }> = {
@@ -19,7 +20,7 @@ const TOOLS_LABELS: Record<string, { label: string; ok: boolean }> = {
 
 type PowerAction = 'on' | 'off' | 'reset' | 'suspend';
 
-export default function VMInfoTab({ vm, onRefresh, onJobStarted, toolsInstall }: Props) {
+export default function VMInfoTab({ vm, onRefresh, onJobStarted, toolsInstall, backendType }: Props) {
     const [busyByVM, setBusyByVM] = useState<Record<string, PowerAction | null>>({});
     const [toolsBusyByVM, setToolsBusyByVM] = useState<Record<string, boolean>>({});
     const [errorByVM, setErrorByVM] = useState<Record<string, string>>({});
@@ -36,6 +37,8 @@ export default function VMInfoTab({ vm, onRefresh, onJobStarted, toolsInstall }:
     const canInstallTools = toolsInstall && isWindowsGuest && isOn &&
         (vm.toolsStatus === 'toolsNotInstalled' || vm.toolsStatus === 'toolsOld' || vm.toolsStatus === 'toolsNotRunning');
     const toolsButtonLabel = vm.toolsStatus === 'toolsNotInstalled' ? 'Install VMware Tools' : 'Upgrade VMware Tools';
+    const showGuestToolsNote = toolsInstall && isOn && !isWindowsGuest;
+    const refLabel = backendType === 'workstation' ? 'VMX path' : 'MOR ref';
 
     async function runAction(action: PowerAction, fn: () => Promise<string>) {
         setErrorByVM(prev => ({ ...prev, [vm.ref]: '' }));
@@ -130,10 +133,15 @@ export default function VMInfoTab({ vm, onRefresh, onJobStarted, toolsInstall }:
                                     {toolsBusy ? 'Submitting…' : toolsButtonLabel}
                                 </button>
                             )}
+                            {showGuestToolsNote && (
+                                <div className="info-inline-note">
+                                    For Linux and macOS guests, install `open-vm-tools` from the guest OS package manager.
+                                </div>
+                            )}
                         </td>
                     </tr>
                     <tr>
-                        <th>MOR ref</th>
+                        <th>{refLabel}</th>
                         <td className="mono">{vm.ref}</td>
                     </tr>
                 </tbody>

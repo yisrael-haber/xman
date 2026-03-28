@@ -89,6 +89,8 @@ func NewBackend(vmrunPath, vmDir string) (*Backend, error) {
 
 func (b *Backend) DisplayName() string { return "Local Workstation" }
 
+func (b *Backend) BackendType() string { return "workstation" }
+
 func (b *Backend) Capabilities() manager.Capabilities {
 	return manager.Capabilities{GuestOps: true, Inventory: false, ToolsInstall: true}
 }
@@ -871,12 +873,42 @@ func splitSnapRef(ref string) (vmRef, snapName string) {
 // guestRunEnv returns whether the guest is Windows and a temp output path,
 // based on the guest OS string from the VMX or request.
 // Handles both VMX short IDs ("win10-64") and display names ("Microsoft Windows 10 (64-bit)").
-func guestRunEnv(guestOS string) (isWin bool, outPath string) {
+func guestRunEnv(guestOS string) (isWin bool, outPath, pidPath string) {
 	outName := fmt.Sprintf("exec_out_%d.txt", time.Now().UnixNano())
+	pidName := fmt.Sprintf("exec_pid_%d.txt", time.Now().UnixNano())
 	if manager.IsWindows(guestOS) {
-		return true, `C:\Users\Public\` + outName
+		return true, `C:\Users\Public\` + outName, `C:\Users\Public\` + pidName
 	}
-	return false, "/tmp/" + outName
+	return false, "/tmp/" + outName, "/tmp/" + pidName
+}
+
+func shQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+func (b *Backend) cancelGuestRun(vmRef, username, password string, isWin bool, pidPath string) {
+	if strings.TrimSpace(pidPath) == "" {
+		return
+	}
+
+	killCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if isWin {
+		args := append(
+			guest(username, password, "runProgramInGuest", vmRef, manager.WinPSExePath),
+			manager.WinPSStopPIDFromFileArgList(pidPath)...,
+		)
+		_, _ = b.runContext(killCtx, args...)
+	} else {
+		killCmd := fmt.Sprintf("test -f %s && kill $(cat %s) >/dev/null 2>&1 || true", shQuote(pidPath), shQuote(pidPath))
+		_, _ = b.runContext(killCtx, guest(username, password,
+			"runProgramInGuest", vmRef,
+			"/bin/sh", "-c", killCmd)...)
+	}
+
+	_, _ = b.runContext(killCtx, guest(username, password,
+		"deleteFileInGuest", vmRef, pidPath)...)
 }
 
 func (b *Backend) Upload(ctx context.Context, emit jobs.EmitFn, req manager.UploadRequest) error {
@@ -911,8 +943,8 @@ func (b *Backend) Download(ctx context.Context, emit jobs.EmitFn, req manager.Do
 
 func (b *Backend) GuestRun(ctx context.Context, emit jobs.EmitFn, req manager.RunRequest) error {
 	started := time.Now()
-	isWin, outPath := guestRunEnv(req.GuestOS)
-	b.traceEvent("guest_run_begin", "vm", vmLabel(req.VMRef), "guest_os", req.GuestOS, "guest_is_windows", isWin, "output_path", outPath, "command", truncateForLog(req.Command, 200))
+	isWin, outPath, pidPath := guestRunEnv(req.GuestOS)
+	b.traceEvent("guest_run_begin", "vm", vmLabel(req.VMRef), "guest_os", req.GuestOS, "guest_is_windows", isWin, "output_path", outPath, "pid_path", pidPath, "command", truncateForLog(req.Command, 200))
 
 	emit(10, "Executing command...")
 	var runErr error
@@ -923,13 +955,20 @@ func (b *Backend) GuestRun(ctx context.Context, emit jobs.EmitFn, req manager.Ru
 		// makes PowerShell treat it as a positional parameter instead of flags.
 		args := append(
 			guest(req.Username, req.Password, "runProgramInGuest", req.VMRef, manager.WinPSExePath),
-			manager.WinPSCmdArgList(req.Command, outPath)...,
+			manager.WinPSCmdArgListWithPID(req.Command, outPath, pidPath)...,
 		)
 		_, runErr = b.runContext(ctx, args...)
 	} else {
+		runCmd := fmt.Sprintf("printf '%%s' $$ > %s; exec %s > %s 2>&1", shQuote(pidPath), req.Command, shQuote(outPath))
 		_, runErr = b.runContext(ctx, guest(req.Username, req.Password,
 			"runProgramInGuest", req.VMRef,
-			"/bin/sh", "-c", req.Command+" > "+outPath+" 2>&1")...)
+			"/bin/sh", "-c", runCmd)...)
+	}
+
+	if ctx.Err() != nil {
+		b.traceEvent("guest_run_cancel_requested", "vm", vmLabel(req.VMRef), "pid_path", pidPath, "ctx_error", ctx.Err())
+		b.cancelGuestRun(req.VMRef, req.Username, req.Password, isWin, pidPath)
+		return ctx.Err()
 	}
 
 	// vmrun exits with code 1 whenever the guest program itself exits non-zero,
@@ -962,6 +1001,8 @@ func (b *Backend) GuestRun(ctx context.Context, emit jobs.EmitFn, req manager.Ru
 	// best-effort cleanup of the temp file in the guest
 	_, _ = b.runContext(ctx, guest(req.Username, req.Password,
 		"deleteFileInGuest", req.VMRef, outPath)...)
+	_, _ = b.runContext(ctx, guest(req.Username, req.Password,
+		"deleteFileInGuest", req.VMRef, pidPath)...)
 
 	data, err := os.ReadFile(tmpPath)
 	if err != nil {

@@ -1,8 +1,10 @@
 WAILS    := $(HOME)/go/bin/wails
 VCSIM    := ./build/bin/vcsim
 VCSIM_PID := /tmp/xman-vcsim.pid
+GO_TEST_ENV := GOCACHE=/tmp/gocache GOTMPDIR=/tmp
+GO_TEST := $(GO_TEST_ENV) go test
 
-.PHONY: dev build build-windows deploy-windows clean tidy vet test vcsim-build vcsim vcsim-bg vcsim-stop doctor help
+.PHONY: dev build build-windows deploy-windows clean tidy vet test test-go test-vcenter test-workstation test-workstation-integration test-frontend test-all vcsim-build vcsim vcsim-bg vcsim-stop doctor help
 
 ## help: list available targets
 help:
@@ -36,9 +38,40 @@ tidy:
 vet:
 	go vet ./...
 
-## test: run all tests
+## test: run the default backend test suite
 test:
-	go test ./...
+	$(MAKE) test-go
+
+## test-go: run all Go tests with isolated temp/cache dirs
+test-go:
+	$(GO_TEST) -count=1 ./...
+
+## test-go-cached: run all Go tests with Go's normal test cache enabled
+test-go-cached:
+	$(GO_TEST) ./...
+
+## test-vcenter: run only the vcsim-backed vCenter backend tests
+test-vcenter:
+	$(GO_TEST) -count=1 ./internal/vcenter
+
+## test-workstation: run Workstation backend unit and fake-vmrun tests
+test-workstation:
+	$(GO_TEST) -count=1 ./internal/workstation
+
+## test-workstation-integration: run opt-in real Workstation tests from WSL/host setup
+## requires: XMAN_WS_INTEGRATION=1 XMAN_WS_VMRUN=<path> XMAN_WS_VM_DIR=<dir>
+test-workstation-integration:
+	XMAN_WS_INTEGRATION=1 $(GO_TEST) -count=1 ./internal/workstation -run WorkstationIntegration
+
+## test-frontend: run the frontend production build as a validation check
+test-frontend:
+	cd frontend && npm run build
+
+## test-all: run backend tests plus frontend validation
+test-all: test-go test-frontend
+
+## test-all-cached: run cached Go tests plus frontend validation
+test-all-cached: test-go-cached test-frontend
 
 ## vcsim-build: build the vcsim test simulator binary
 vcsim-build:

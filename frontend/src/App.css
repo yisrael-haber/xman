@@ -583,6 +583,13 @@
 
 .info-table td { color: #c8d8e8; }
 
+.info-inline-note {
+    margin-top: 0.55rem;
+    color: #8ea4ba;
+    font-size: 0.78rem;
+    line-height: 1.45;
+}
+
 .badge {
     display: inline-block;
     padding: 0.15rem 0.5rem;

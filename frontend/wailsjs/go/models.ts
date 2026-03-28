@@ -25,6 +25,7 @@ export namespace config {
 	    }
 	}
 	export class ConnectionInfo {
+	    backendType: string;
 	    displayName: string;
 	    guestOps: boolean;
 	    inventory: boolean;
@@ -36,6 +37,7 @@ export namespace config {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.backendType = source["backendType"];
 	        this.displayName = source["displayName"];
 	        this.guestOps = source["guestOps"];
 	        this.inventory = source["inventory"];

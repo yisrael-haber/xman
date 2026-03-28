@@ -45,6 +45,8 @@ func (b *Backend) DisplayName() string {
 	return "vCenter @ " + b.session.Host()
 }
 
+func (b *Backend) BackendType() string { return "vcenter" }
+
 func (b *Backend) Capabilities() manager.Capabilities {
 	return manager.Capabilities{GuestOps: true, Inventory: true, ToolsInstall: true}
 }
@@ -306,7 +308,7 @@ func (b *Backend) Upload(ctx context.Context, emit jobs.EmitFn, req manager.Uplo
 		return fmt.Errorf("stat local file: %w", err)
 	}
 
-	emit(10, "Initiating transfer to guest...")
+	emit(10, "Copying file to guest...")
 	var fileAttrs types.BaseGuestFileAttributes
 	if manager.IsWindows(req.GuestOS) {
 		fileAttrs = &types.GuestWindowsFileAttributes{}
@@ -350,7 +352,7 @@ func (b *Backend) Download(ctx context.Context, emit jobs.EmitFn, req manager.Do
 
 	guestAuth := &types.NamePasswordAuthentication{Username: req.Username, Password: req.Password}
 
-	emit(10, "Requesting file info from guest...")
+	emit(10, "Copying file from guest...")
 	fileInfo, err := fm.InitiateFileTransferFromGuest(ctx, guestAuth, req.GuestPath)
 	if err != nil {
 		return fmt.Errorf("initiating download: %w", err)
@@ -419,10 +421,11 @@ func (b *Backend) GuestRun(ctx context.Context, emit jobs.EmitFn, req manager.Ru
 	}
 
 	deadline := time.Now().Add(5 * time.Minute)
+	var exitCode int32 = -1
 	for {
 		select {
 		case <-ctx.Done():
-			_ = pm.TerminateProcess(ctx, auth, pid)
+			terminateGuestProcess(pm, auth, pid)
 			return ctx.Err()
 		default:
 		}
@@ -431,10 +434,11 @@ func (b *Backend) GuestRun(ctx context.Context, emit jobs.EmitFn, req manager.Ru
 			return fmt.Errorf("checking process status: %w", err)
 		}
 		if len(procs) > 0 && procs[0].ExitCode != -1 {
+			exitCode = procs[0].ExitCode
 			break
 		}
 		if time.Now().After(deadline) {
-			_ = pm.TerminateProcess(ctx, auth, pid)
+			terminateGuestProcess(pm, auth, pid)
 			return fmt.Errorf("timed out waiting for command to finish")
 		}
 		emit(50, "Waiting for command to finish...")
@@ -469,16 +473,27 @@ func (b *Backend) GuestRun(ctx context.Context, emit jobs.EmitFn, req manager.Ru
 		return fmt.Errorf("reading output: %w", err)
 	}
 
-	output := string(data)
+	output := strings.TrimSpace(string(data))
 	if len(output) > 16*1024 {
 		output = output[:16*1024] + "\n[output truncated]"
 	}
 	if output == "" {
 		output = "(no output)"
 	}
+	if exitCode != 0 {
+		emit(95, fmt.Sprintf("%s\n\n[exit code: %d]", output, exitCode))
+		emit(100, "Command finished with non-zero exit status.")
+		return nil
+	}
 	emit(95, output)
 	emit(100, "Command completed.")
 	return nil
+}
+
+func terminateGuestProcess(pm *guest.ProcessManager, auth types.BaseGuestAuthentication, pid int64) {
+	killCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_ = pm.TerminateProcess(killCtx, auth, pid)
 }
 
 // --- Inventory ---
@@ -756,12 +771,20 @@ func (b *Backend) InstallTools(ctx context.Context, emit jobs.EmitFn, vmRef stri
 	}
 
 	var obj mo.VirtualMachine
-	if err := vm.Properties(ctx, vm.Reference(), []string{"runtime.powerState", "guest.toolsStatus"}, &obj); err != nil {
+	if err := vm.Properties(ctx, vm.Reference(), []string{"runtime.powerState", "guest.toolsStatus", "config.guestFullName"}, &obj); err != nil {
 		return fmt.Errorf("reading VM properties: %w", err)
 	}
 
 	if obj.Runtime.PowerState != types.VirtualMachinePowerStatePoweredOn {
 		return fmt.Errorf("VM must be powered on to install VMware Tools")
+	}
+
+	guestOS := ""
+	if obj.Config != nil {
+		guestOS = obj.Config.GuestFullName
+	}
+	if guestOS != "" && !manager.IsWindows(guestOS) {
+		return fmt.Errorf("bundled VMware Tools is not recommended for Linux/macOS guests; install open-vm-tools via the guest package manager instead")
 	}
 
 	if obj.Guest != nil && obj.Guest.ToolsStatus == types.VirtualMachineToolsStatusToolsOk {
@@ -773,22 +796,22 @@ func (b *Backend) InstallTools(ctx context.Context, emit jobs.EmitFn, vmRef stri
 	// installed it would create a task that blocks indefinitely. Mount the ISO
 	// directly and let the user run the installer.
 	if obj.Guest == nil || obj.Guest.ToolsStatus == types.VirtualMachineToolsStatusToolsNotInstalled {
-		emit(10, "Mounting VMware Tools ISO...")
+		emit(10, "Mounting VMware Tools installer...")
 		if err := vm.MountToolsInstaller(ctx); err != nil {
 			return fmt.Errorf("mounting tools installer: %w", err)
 		}
-		emit(100, "VMware Tools ISO mounted in the guest CD-ROM. Run the installer from within the guest to complete installation.")
+		emit(100, "VMware Tools ISO mounted. Open the CD-ROM drive inside the guest and run setup64.exe (or setup.exe on 32-bit) to complete installation.")
 		return nil
 	}
 
 	emit(10, "Requesting VMware Tools upgrade from vSphere...")
 	task, err := vm.UpgradeTools(ctx, "")
 	if err != nil {
-		emit(50, "Automatic upgrade unavailable — mounting VMware Tools ISO...")
+		emit(50, "Automatic upgrade unavailable — mounting VMware Tools installer...")
 		if mountErr := vm.MountToolsInstaller(ctx); mountErr != nil {
 			return fmt.Errorf("upgrade tools: %w; mount installer fallback: %w", err, mountErr)
 		}
-		emit(100, "VMware Tools ISO mounted in the guest CD-ROM. Run the installer from within the guest to complete installation.")
+		emit(100, "VMware Tools ISO mounted. Open the CD-ROM drive inside the guest and run setup64.exe (or setup.exe on 32-bit) to complete installation.")
 		return nil
 	}
 

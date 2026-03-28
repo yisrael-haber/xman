@@ -88,6 +88,7 @@ func (m *Manager) ConnectionInfo() config.ConnectionInfo {
 	}
 	caps := b.Capabilities()
 	return config.ConnectionInfo{
+		BackendType:  b.BackendType(),
 		DisplayName:  b.DisplayName(),
 		GuestOps:     caps.GuestOps,
 		Inventory:    caps.Inventory,

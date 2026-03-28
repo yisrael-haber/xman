@@ -6,9 +6,19 @@ import { EventsOn } from '../../../../wailsjs/runtime/runtime';
 interface Props {
     vm: manager.VMInfo;
     onJobStarted: (id: string, targetName?: string) => void;
+    backendType: string;
 }
 
-export default function SnapshotsTab({ vm, onJobStarted }: Props) {
+function formatSnapshotDate(value: any): string {
+    if (!value) return '';
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime()) || date.getUTCFullYear() < 1970) {
+        return '';
+    }
+    return date.toLocaleString();
+}
+
+export default function SnapshotsTab({ vm, onJobStarted, backendType }: Props) {
     const [snaps, setSnaps]       = useState<manager.SnapshotInfo[]>([]);
     const [loading, setLoading]   = useState(false);
     const [error, setError]       = useState('');
@@ -18,6 +28,7 @@ export default function SnapshotsTab({ vm, onJobStarted }: Props) {
     const [quiesce, setQuiesce]   = useState(false);
     const [creating, setCreating] = useState(false);
     const [createErr, setCreateErr] = useState('');
+    const supportsAdvancedSnapshotOptions = backendType === 'vcenter';
 
     const load = useCallback(async () => {
         setLoading(true);
@@ -76,21 +87,29 @@ export default function SnapshotsTab({ vm, onJobStarted }: Props) {
                         <label>Snapshot name</label>
                         <input value={newName} onChange={e => setNewName(e.target.value)} placeholder="my-snapshot" />
                     </div>
-                    <div className="field field--inline">
-                        <label>Description</label>
-                        <input value={newDesc} onChange={e => setNewDesc(e.target.value)} placeholder="optional" />
+                    {supportsAdvancedSnapshotOptions && (
+                        <div className="field field--inline">
+                            <label>Description</label>
+                            <input value={newDesc} onChange={e => setNewDesc(e.target.value)} placeholder="optional" />
+                        </div>
+                    )}
+                </div>
+                {supportsAdvancedSnapshotOptions ? (
+                    <div className="checkbox-group">
+                        <label className="checkbox-row">
+                            <input type="checkbox" checked={memory} onChange={e => setMemory(e.target.checked)} />
+                            Include memory state
+                        </label>
+                        <label className="checkbox-row">
+                            <input type="checkbox" checked={quiesce} onChange={e => setQuiesce(e.target.checked)} />
+                            Quiesce guest filesystem (requires Tools)
+                        </label>
                     </div>
-                </div>
-                <div className="checkbox-group">
-                    <label className="checkbox-row">
-                        <input type="checkbox" checked={memory} onChange={e => setMemory(e.target.checked)} />
-                        Include memory state
-                    </label>
-                    <label className="checkbox-row">
-                        <input type="checkbox" checked={quiesce} onChange={e => setQuiesce(e.target.checked)} />
-                        Quiesce guest filesystem (requires Tools)
-                    </label>
-                </div>
+                ) : (
+                    <div className="info-inline-note">
+                        Workstation snapshots support the snapshot name, but not description, memory-state, or quiesce options.
+                    </div>
+                )}
                 {createErr && <p className="form-error">{createErr}</p>}
                 <button className="btn-primary" onClick={handleCreate} disabled={creating || !newName.trim()}>
                     {creating ? 'Creating…' : 'Take Snapshot'}
@@ -115,19 +134,24 @@ export default function SnapshotsTab({ vm, onJobStarted }: Props) {
             )}
 
             {snaps.map(snap => (
-                <div key={snap.ref} className={`snapshot-row ${snap.isCurrent ? 'snapshot-row--current' : ''}`}
-                     style={{ paddingLeft: `${0.75 + snap.depth * 1.25}rem` }}>
-                    <div className="snapshot-info">
-                        <span className="snapshot-name">{snap.name}</span>
-                        {snap.isCurrent && <span className="badge badge--green" style={{fontSize:'0.7rem'}}>current</span>}
-                        {snap.description && <span className="snapshot-desc">{snap.description}</span>}
-                        <span className="snapshot-date">{new Date(snap.createTime).toLocaleString()}</span>
-                    </div>
-                    <div className="snapshot-actions">
-                        <button className="btn-secondary" onClick={() => handleRevert(snap.ref)}>Revert</button>
-                        <button className="btn-secondary btn-danger" onClick={() => handleDelete(snap.ref)}>Delete</button>
-                    </div>
-                </div>
+                (() => {
+                    const createTime = formatSnapshotDate(snap.createTime);
+                    return (
+                        <div key={snap.ref} className={`snapshot-row ${snap.isCurrent ? 'snapshot-row--current' : ''}`}
+                             style={{ paddingLeft: `${0.75 + snap.depth * 1.25}rem` }}>
+                            <div className="snapshot-info">
+                                <span className="snapshot-name">{snap.name}</span>
+                                {snap.isCurrent && <span className="badge badge--green" style={{fontSize:'0.7rem'}}>current</span>}
+                                {snap.description && <span className="snapshot-desc">{snap.description}</span>}
+                                {createTime && <span className="snapshot-date">{createTime}</span>}
+                            </div>
+                            <div className="snapshot-actions">
+                                <button className="btn-secondary" onClick={() => handleRevert(snap.ref)}>Revert</button>
+                                <button className="btn-secondary btn-danger" onClick={() => handleDelete(snap.ref)}>Delete</button>
+                            </div>
+                        </div>
+                    );
+                })()
             ))}
         </div>
     );

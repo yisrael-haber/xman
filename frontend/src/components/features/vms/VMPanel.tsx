@@ -23,6 +23,7 @@ interface Props {
     onJobStarted: (id: string, targetName?: string) => void;
     toolsInstall: boolean;
     guestOps: boolean;
+    backendType: string;
 }
 
 function formatPowerState(state: string): string {
@@ -53,7 +54,7 @@ function formatToolsStatus(state: string): string {
     }
 }
 
-export default function VMPanel({ onJobStarted, toolsInstall, guestOps }: Props) {
+export default function VMPanel({ onJobStarted, toolsInstall, guestOps, backendType }: Props) {
     const [vms,      setVms]      = useState<manager.VMInfo[]>([]);
     const [selected, setSelected] = useState<manager.VMInfo | null>(null);
     const [loading,  setLoading]  = useState(false);
@@ -178,10 +179,16 @@ export default function VMPanel({ onJobStarted, toolsInstall, guestOps }: Props)
 
                         <div className="tab-content">
                             {activeTab === 'info' && (
-                                <VMInfoTab vm={selected} onRefresh={loadVMs} onJobStarted={onJobStarted} toolsInstall={toolsInstall} />
+                                <VMInfoTab
+                                    vm={selected}
+                                    onRefresh={loadVMs}
+                                    onJobStarted={onJobStarted}
+                                    toolsInstall={toolsInstall}
+                                    backendType={backendType}
+                                />
                             )}
                             {activeTab === 'snapshots' && (
-                                <SnapshotsTab vm={selected} onJobStarted={onJobStarted} />
+                                <SnapshotsTab vm={selected} onJobStarted={onJobStarted} backendType={backendType} />
                             )}
                             {activeTab === 'exec' && (
                                 <GuestExecTab vm={selected} onJobStarted={onJobStarted} />

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"xman/internal/jobs"
 	"xman/internal/sshtransport"
@@ -84,6 +85,20 @@ func cleanupCommand(guestPath, guestOS string) string {
 	return fmt.Sprintf(`rm -f "%s"`, guestPath)
 }
 
+func bestEffortGuestCleanup(b Backend, req RunRequest) {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	noop := func(_ int, _ string) {}
+	_ = b.GuestRun(cleanupCtx, noop, req)
+}
+
+func bestEffortSSHCleanup(host, keyLabel, command string) {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	noop := func(_ int, _ string) {}
+	_ = sshtransport.Run(cleanupCtx, noop, host, keyLabel, command)
+}
+
 // Install uploads an installer to the guest via VMware Tools and runs it silently.
 func (m *Manager) Install(req InstallRequest) string {
 	filename := filepath.Base(req.LocalPath)
@@ -124,9 +139,9 @@ func (m *Manager) Install(req InstallRequest) string {
 			GuestOS:  req.GuestOS,
 		})
 
-		// Best-effort cleanup — ignore errors, suppress output.
-		noop := func(_ int, _ string) {}
-		_ = b.GuestRun(ctx, noop, RunRequest{
+		// Best-effort cleanup — ignore errors, suppress output. Use a fresh short-
+		// lived context so cleanup still runs after cancel/timeout/failure.
+		bestEffortGuestCleanup(b, RunRequest{
 			VMRef:    req.VMRef,
 			Username: req.Username,
 			Password: req.Password,
@@ -161,9 +176,9 @@ func (m *Manager) SSHInstall(req SSHInstallRequest) string {
 		emit(55, "Running installer...")
 		runErr := sshtransport.Run(ctx, emit, req.Host, req.KeyLabel, cmd)
 
-		// Best-effort cleanup — ignore errors, suppress output.
-		noop := func(_ int, _ string) {}
-		_ = sshtransport.Run(ctx, noop, req.Host, req.KeyLabel, cleanupCommand(guestPath, req.GuestOS))
+		// Best-effort cleanup — ignore errors, suppress output. Use a fresh short-
+		// lived context so cleanup still runs after cancel/timeout/failure.
+		bestEffortSSHCleanup(req.Host, req.KeyLabel, cleanupCommand(guestPath, req.GuestOS))
 
 		return runErr
 	})

@@ -19,6 +19,7 @@ type ConnectRequest struct {
 // ConnectionInfo is returned after a successful connect.
 // A zero-value (DisplayName == "") signals not connected.
 type ConnectionInfo struct {
+	BackendType  string `json:"backendType"`
 	DisplayName  string `json:"displayName"`
 	GuestOps     bool   `json:"guestOps"`     // file transfer + guest exec available
 	Inventory    bool   `json:"inventory"`    // host + datastore inventory available

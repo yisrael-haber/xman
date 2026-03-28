@@ -16,6 +16,7 @@ type Capabilities struct {
 // Backend is the interface all hypervisor backends must implement.
 // The Manager holds one active Backend between Connect and Disconnect.
 type Backend interface {
+	BackendType() string
 	DisplayName() string
 	Capabilities() Capabilities
 	Disconnect(ctx context.Context) error
