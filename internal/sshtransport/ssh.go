@@ -6,22 +6,66 @@ import (
 	"io"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
+	"xman/internal/config"
 	"xman/internal/jobs"
 )
 
-func dial(host string, port int, username, password string) (*ssh.Client, error) {
-	cfg := &ssh.ClientConfig{
+const defaultSSHPort = 22
+
+func sshClientConfig(username string, auth ssh.AuthMethod) *ssh.ClientConfig {
+	return &ssh.ClientConfig{
 		User:            username,
-		Auth:            []ssh.AuthMethod{ssh.Password(password)},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec — internal VM management
+		Auth:            []ssh.AuthMethod{auth},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec -- internal VM management
 		Timeout:         15 * time.Second,
 	}
-	return ssh.Dial("tcp", net.JoinHostPort(host, fmt.Sprintf("%d", port)), cfg)
+}
+
+func dialAddress(host string, defaultPort int) (string, string, error) {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return "", "", fmt.Errorf("host is required")
+	}
+
+	if _, _, err := net.SplitHostPort(host); err == nil {
+		return host, host, nil
+	}
+
+	display := net.JoinHostPort(host, strconv.Itoa(defaultPort))
+	return display, display, nil
+}
+
+func dialWithPassword(host string, port int, username, password string) (*ssh.Client, string, error) {
+	if port <= 0 {
+		port = defaultSSHPort
+	}
+	addr := net.JoinHostPort(strings.TrimSpace(host), strconv.Itoa(port))
+	client, err := ssh.Dial("tcp", addr, sshClientConfig(username, ssh.Password(password)))
+	return client, addr, err
+}
+
+func dialWithKey(host, keyLabel string) (*ssh.Client, config.KeyMeta, string, error) {
+	meta, signer, err := config.LoadKeySigner(keyLabel)
+	if err != nil {
+		return nil, config.KeyMeta{}, "", err
+	}
+	if strings.TrimSpace(meta.DefaultUser) == "" {
+		return nil, config.KeyMeta{}, "", fmt.Errorf("key %q has no default user; set one in SSH Keys before using it for SSH/SFTP", keyLabel)
+	}
+
+	addr, display, err := dialAddress(host, defaultSSHPort)
+	if err != nil {
+		return nil, config.KeyMeta{}, "", err
+	}
+
+	client, err := ssh.Dial("tcp", addr, sshClientConfig(meta.DefaultUser, ssh.PublicKeys(signer)))
+	return client, meta, display, err
 }
 
 // cancelOnContext closes client when ctx is cancelled, and stops when done is closed.
@@ -33,13 +77,14 @@ func cancelOnContext(ctx context.Context, client *ssh.Client, done <-chan struct
 	}
 }
 
-func Run(ctx context.Context, emit jobs.EmitFn, host string, port int, username, password, command string) error {
-	emit(5, fmt.Sprintf("Connecting to %s:%d...", host, port))
-	client, err := dial(host, port, username, password)
+func Run(ctx context.Context, emit jobs.EmitFn, host, keyLabel, command string) error {
+	client, meta, display, err := dialWithKey(host, keyLabel)
 	if err != nil {
 		return fmt.Errorf("SSH connect: %w", err)
 	}
 	defer client.Close()
+
+	emit(5, fmt.Sprintf("Connecting to %s as %s with key %s...", display, meta.DefaultUser, meta.Label))
 
 	done := make(chan struct{})
 	defer close(done)
@@ -62,22 +107,24 @@ func Run(ctx context.Context, emit jobs.EmitFn, host string, port int, username,
 		output = "(no output)"
 	}
 
-	// Non-zero exit — show output anyway with the exit error appended.
 	if err != nil {
-		emit(100, output+"\n\n["+err.Error()+"]")
+		emit(95, output+"\n\n["+err.Error()+"]")
+		emit(100, "Command finished with non-zero exit status.")
 		return nil
 	}
-	emit(100, output)
+	emit(95, output)
+	emit(100, "Command completed.")
 	return nil
 }
 
-func Upload(ctx context.Context, emit jobs.EmitFn, host string, port int, username, password, localPath, remotePath string) error {
-	emit(5, fmt.Sprintf("Connecting to %s:%d...", host, port))
-	client, err := dial(host, port, username, password)
+func Upload(ctx context.Context, emit jobs.EmitFn, host, keyLabel, localPath, remotePath string) error {
+	client, meta, display, err := dialWithKey(host, keyLabel)
 	if err != nil {
 		return fmt.Errorf("SSH connect: %w", err)
 	}
 	defer client.Close()
+
+	emit(5, fmt.Sprintf("Connecting to %s as %s with key %s...", display, meta.DefaultUser, meta.Label))
 
 	done := make(chan struct{})
 	defer close(done)
@@ -110,13 +157,14 @@ func Upload(ctx context.Context, emit jobs.EmitFn, host string, port int, userna
 	return nil
 }
 
-func Download(ctx context.Context, emit jobs.EmitFn, host string, port int, username, password, remotePath, localPath string) error {
-	emit(5, fmt.Sprintf("Connecting to %s:%d...", host, port))
-	client, err := dial(host, port, username, password)
+func Download(ctx context.Context, emit jobs.EmitFn, host, keyLabel, remotePath, localPath string) error {
+	client, meta, display, err := dialWithKey(host, keyLabel)
 	if err != nil {
 		return fmt.Errorf("SSH connect: %w", err)
 	}
 	defer client.Close()
+
+	emit(5, fmt.Sprintf("Connecting to %s as %s with key %s...", display, meta.DefaultUser, meta.Label))
 
 	done := make(chan struct{})
 	defer close(done)
@@ -146,5 +194,24 @@ func Download(ctx context.Context, emit jobs.EmitFn, host string, port int, user
 		return fmt.Errorf("downloading: %w", err)
 	}
 	emit(100, "Download complete.")
+	return nil
+}
+
+func VerifyKey(ctx context.Context, host, keyLabel string) error {
+	client, _, _, err := dialWithKey(host, keyLabel)
+	if err != nil {
+		return fmt.Errorf("SSH connect: %w", err)
+	}
+	defer client.Close()
+
+	done := make(chan struct{})
+	defer close(done)
+	go cancelOnContext(ctx, client, done)
+
+	session, err := client.NewSession()
+	if err != nil {
+		return fmt.Errorf("SSH session: %w", err)
+	}
+	session.Close()
 	return nil
 }

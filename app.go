@@ -64,13 +64,21 @@ func (a *App) Connect(req config.ConnectRequest) (config.ConnectionInfo, error) 
 		return config.ConnectionInfo{}, err
 	}
 
-	a.Manager.SetBackend(b)
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	a.Manager.ReplaceBackend(ctx, b)
 	return a.Manager.ConnectionInfo(), nil
 }
 
 // Disconnect tears down the active backend.
 func (a *App) Disconnect() error {
-	return a.Manager.Disconnect(context.Background())
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return a.Manager.Disconnect(ctx)
 }
 
 // ConnectionInfo returns the current connection state and capabilities.
@@ -109,4 +117,18 @@ func (a *App) SaveFileDialog(title, defaultFilename string) (string, error) {
 		Title:           title,
 		DefaultFilename: defaultFilename,
 	})
+}
+
+// --- SSH Key Management ---
+
+func (a *App) CreateSSHKey(label, algorithm, defaultUser string) (config.KeyMeta, error) {
+	return config.CreateKeyPair(label, algorithm, defaultUser)
+}
+
+func (a *App) ListSSHKeys() ([]config.KeyMeta, error) {
+	return config.ListKeys()
+}
+
+func (a *App) DeleteSSHKey(label string) error {
+	return config.DeleteKey(label)
 }

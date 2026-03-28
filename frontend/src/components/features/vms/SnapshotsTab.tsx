@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import { manager } from '../../../../wailsjs/go/models';
 import { SnapshotList, SnapshotCreate, SnapshotRevert, SnapshotDelete } from '../../../../wailsjs/go/manager/Manager';
-import { EventsOn, EventsOff } from '../../../../wailsjs/runtime/runtime';
+import { EventsOn } from '../../../../wailsjs/runtime/runtime';
 
 interface Props {
     vm: manager.VMInfo;
-    onJobStarted: (id: string) => void;
+    onJobStarted: (id: string, targetName?: string) => void;
 }
 
 export default function SnapshotsTab({ vm, onJobStarted }: Props) {
@@ -34,10 +34,9 @@ export default function SnapshotsTab({ vm, onJobStarted }: Props) {
     useEffect(() => { load(); }, [load]);
 
     function trackAndReload(id: string) {
-        onJobStarted(id);
+        onJobStarted(id, vm.name || vm.ref);
         const unsub = EventsOn(`job:${id}`, (job: any) => {
             if (job.status === 'done' || job.status === 'failed' || job.status === 'cancelled') {
-                EventsOff(`job:${id}`);
                 unsub();
                 load();
             }

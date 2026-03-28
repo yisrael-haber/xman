@@ -3,6 +3,8 @@ package workstation
 import (
 	"context"
 	"fmt"
+	"io"
+	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -11,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"xman/internal/jobs"
@@ -24,7 +27,28 @@ import (
 type Backend struct {
 	vmrunPath string
 	vmDir     string // custom VM directory; empty means use inventory.vmls + defaults
+
+	cacheMu sync.RWMutex
+	cache   map[string]guestRuntimeInfo
+
+	traceLogger  *log.Logger
+	traceCloser  io.Closer
+	traceSession string
+	traceSeq     atomic.Uint64
 }
+
+type guestRuntimeInfo struct {
+	ToolsStatus string
+	IPAddress   string
+	RefreshedAt time.Time
+}
+
+const (
+	guestRuntimeCacheTTL     = 15 * time.Second
+	guestRuntimeQueryTimeout = 2 * time.Second
+	vmListDetailConcurrency  = 4
+	vmListRefreshPerCall     = 1
+)
 
 // NewBackend validates that vmrun is available and returns a ready Backend.
 // If vmrunPath is empty, common install locations and PATH are tried.
@@ -34,6 +58,8 @@ func NewBackend(vmrunPath, vmDir string) (*Backend, error) {
 		vmrunPath = detectVmrun()
 	}
 
+	traceLogger, traceCloser := newTraceLogger(hasPerfLogArg())
+
 	// Verify the binary works
 	cmd := exec.Command(vmrunPath, "list")
 	configureCmd(cmd)
@@ -41,7 +67,24 @@ func NewBackend(vmrunPath, vmDir string) (*Backend, error) {
 		return nil, fmt.Errorf("vmrun not available at %q: %w", vmrunPath, err)
 	}
 
-	return &Backend{vmrunPath: vmrunPath, vmDir: vmDir}, nil
+	backend := &Backend{
+		vmrunPath:    vmrunPath,
+		vmDir:        vmDir,
+		cache:        make(map[string]guestRuntimeInfo),
+		traceLogger:  traceLogger,
+		traceCloser:  traceCloser,
+		traceSession: newTraceSessionID(),
+	}
+	backend.traceEvent(
+		"backend_ready",
+		"vmrun_path", vmrunPath,
+		"vm_dir", vmDir,
+		"cache_ttl", guestRuntimeCacheTTL,
+		"query_timeout", guestRuntimeQueryTimeout,
+		"detail_concurrency", vmListDetailConcurrency,
+		"refresh_per_call", vmListRefreshPerCall,
+	)
+	return backend, nil
 }
 
 func (b *Backend) DisplayName() string { return "Local Workstation" }
@@ -50,17 +93,252 @@ func (b *Backend) Capabilities() manager.Capabilities {
 	return manager.Capabilities{GuestOps: true, Inventory: false, ToolsInstall: true}
 }
 
-func (b *Backend) Disconnect(_ context.Context) error { return nil } // stateless
+func (b *Backend) Disconnect(_ context.Context) error {
+	b.traceEvent("backend_disconnect_begin")
+	if b.traceCloser != nil {
+		if syncer, ok := b.traceCloser.(interface{ Sync() error }); ok {
+			_ = syncer.Sync()
+		}
+		return b.traceCloser.Close()
+	}
+	return nil
+} // stateless
+
+func traceLogFilename() string {
+	return fmt.Sprintf("xman_log_%s.txt", time.Now().Format("20060102_150405"))
+}
+
+func newTraceSessionID() string {
+	return fmt.Sprintf("pid-%d-%d", os.Getpid(), time.Now().UnixNano())
+}
+
+func hasPerfLogArg() bool {
+	for _, arg := range os.Args[1:] {
+		normalized := strings.TrimSpace(strings.ToLower(arg))
+		if normalized == "perflog" || normalized == "--perflog" {
+			return true
+		}
+	}
+	return false
+}
+
+func traceLogCandidates() []string {
+	filename := traceLogFilename()
+	candidates := make([]string, 0, 4)
+
+	if exePath, err := os.Executable(); err == nil && exePath != "" {
+		candidates = append(candidates, filepath.Join(filepath.Dir(exePath), filename))
+	}
+
+	if wd, err := os.Getwd(); err == nil && wd != "" {
+		candidates = append(candidates, filepath.Join(wd, filename))
+	}
+
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		candidates = append(candidates, filepath.Join(home, "Desktop", filename))
+		candidates = append(candidates, filepath.Join(home, filename))
+	}
+
+	candidates = append(candidates, filepath.Join(os.TempDir(), filename))
+	return candidates
+}
+
+func traceLogPath() string {
+	for _, path := range traceLogCandidates() {
+		if path != "" {
+			return path
+		}
+	}
+	filename := fmt.Sprintf("xman_log_%s.txt", time.Now().Format("20060102_150405"))
+	return filepath.Join(os.TempDir(), filename)
+}
+
+func newTraceLogger(enabled bool) (*log.Logger, io.Closer) {
+	if !enabled {
+		return nil, nil
+	}
+	for _, path := range traceLogCandidates() {
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			log.Printf("[workstation trace] failed to open trace log %q: %v", path, err)
+			continue
+		}
+		logger := log.New(f, "", log.LstdFlags)
+		logger.Printf("[workstation trace] writing timings to %s", path)
+		return logger, f
+	}
+	return log.New(os.Stderr, "", log.LstdFlags), nil
+}
+
+func (b *Backend) traceEnabled() bool {
+	return b.traceLogger != nil
+}
+
+func (b *Backend) nextTraceID() uint64 {
+	return b.traceSeq.Add(1)
+}
+
+func (b *Backend) traceEvent(event string, fields ...any) {
+	if !b.traceEnabled() {
+		return
+	}
+	prefix := []any{"session", b.traceSession, "event", event}
+	b.traceLogger.Printf("[workstation trace] %s", formatTraceFields(append(prefix, fields...)...))
+}
+
+func (b *Backend) traceTiming(op string, started time.Time, fields ...any) {
+	if !b.traceEnabled() {
+		return
+	}
+	prefix := []any{"session", b.traceSession, "op", op, "elapsed", time.Since(started).Round(time.Millisecond)}
+	b.traceLogger.Printf("[workstation timing] %s", formatTraceFields(append(prefix, fields...)...))
+}
+
+func formatTraceFields(fields ...any) string {
+	if len(fields) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, (len(fields)+1)/2)
+	for i := 0; i < len(fields); i += 2 {
+		key := fmt.Sprint(fields[i])
+		value := "<missing>"
+		if i+1 < len(fields) {
+			value = traceFieldValue(fields[i+1])
+		}
+		parts = append(parts, fmt.Sprintf("%s=%s", key, value))
+	}
+	return strings.Join(parts, " ")
+}
+
+func traceFieldValue(value any) string {
+	switch v := value.(type) {
+	case string:
+		return strconv.Quote(v)
+	case []string:
+		if len(v) == 0 {
+			return "[]"
+		}
+		quoted := make([]string, len(v))
+		for i, item := range v {
+			quoted[i] = strconv.Quote(item)
+		}
+		return "[" + strings.Join(quoted, ",") + "]"
+	case time.Duration:
+		return strconv.Quote(v.String())
+	case time.Time:
+		return strconv.Quote(v.Format(time.RFC3339Nano))
+	case error:
+		if v == nil {
+			return `""`
+		}
+		return strconv.Quote(v.Error())
+	case nil:
+		return `""`
+	default:
+		return strconv.Quote(fmt.Sprint(v))
+	}
+}
+
+func sanitizeArgs(args []string) []string {
+	if len(args) == 0 {
+		return nil
+	}
+	out := append([]string(nil), args...)
+	for i := 0; i < len(out)-1; i++ {
+		switch out[i] {
+		case "-gu":
+			out[i+1] = "<redacted-user>"
+		case "-gp":
+			out[i+1] = "<redacted-pass>"
+		}
+	}
+	return out
+}
+
+func contextDeadlineString(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return ""
+	}
+	return deadline.Format(time.RFC3339Nano)
+}
+
+func vmLabel(vmx string) string {
+	if vmx == "" {
+		return ""
+	}
+	return filepath.Base(vmx)
+}
+
+func vmLabels(vmxPaths []string) []string {
+	if len(vmxPaths) == 0 {
+		return nil
+	}
+	labels := make([]string, len(vmxPaths))
+	for i, vmx := range vmxPaths {
+		labels[i] = vmLabel(vmx)
+	}
+	return labels
+}
+
+func keysFromSet(set map[string]struct{}) []string {
+	if len(set) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(set))
+	for key := range set {
+		keys = append(keys, vmLabel(key))
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func truncateForLog(text string, limit int) string {
+	if limit <= 0 || len(text) <= limit {
+		return text
+	}
+	if limit <= 3 {
+		return text[:limit]
+	}
+	return text[:limit-3] + "..."
+}
 
 // --- vmrun helpers ---
 
 // run executes vmrun with the given args and returns trimmed stdout.
 func (b *Backend) run(args ...string) (string, error) {
-	cmd := exec.Command(b.vmrunPath, args...)
+	return b.runContext(context.Background(), args...)
+}
+
+// runContext executes vmrun with the given args and returns trimmed stdout.
+func (b *Backend) runContext(ctx context.Context, args ...string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	started := time.Now()
+	cmdID := b.nextTraceID()
+	safeArgs := sanitizeArgs(args)
+	b.traceEvent("vmrun_start", "cmd_id", cmdID, "args", safeArgs, "deadline", contextDeadlineString(ctx))
+	cmd := exec.CommandContext(ctx, b.vmrunPath, args...)
 	configureCmd(cmd)
 	out, err := cmd.Output()
+	stdoutText := strings.TrimSpace(string(out))
+	stdoutLines := 0
+	if stdoutText != "" {
+		stdoutLines = len(strings.Split(stdoutText, "\n"))
+	}
+	b.traceTiming("vmrun", started, "cmd_id", cmdID, "args", safeArgs, "stdout_bytes", len(out), "stdout_lines", stdoutLines, "success", err == nil)
 	if err != nil {
+		if ctx.Err() != nil {
+			b.traceEvent("vmrun_context_done", "cmd_id", cmdID, "args", safeArgs, "ctx_error", ctx.Err())
+			return "", ctx.Err()
+		}
 		if exitErr, ok := err.(*exec.ExitError); ok {
+			stderrText := strings.TrimSpace(string(exitErr.Stderr))
+			b.traceEvent("vmrun_exit_error", "cmd_id", cmdID, "args", safeArgs, "stderr", stderrText, "stdout", stdoutText)
 			if msg := strings.TrimSpace(string(exitErr.Stderr)); msg != "" {
 				return "", fmt.Errorf("%s", msg)
 			}
@@ -68,9 +346,213 @@ func (b *Backend) run(args ...string) (string, error) {
 				return "", fmt.Errorf("%s", msg)
 			}
 		}
+		b.traceEvent("vmrun_error", "cmd_id", cmdID, "args", safeArgs, "error", err)
 		return "", err
 	}
+	b.traceEvent("vmrun_success", "cmd_id", cmdID, "args", safeArgs, "stdout_preview", truncateForLog(stdoutText, 160))
 	return strings.TrimSpace(string(out)), nil
+}
+
+func normalizeToolsStatus(raw string) string {
+	state := strings.ToLower(strings.TrimSpace(raw))
+
+	switch {
+	case state == "", strings.Contains(state, "not running"), strings.Contains(state, "stopped"):
+		return "toolsNotRunning"
+	case strings.Contains(state, "not installed"), strings.Contains(state, "notinstalled"), strings.Contains(state, "missing"):
+		return "toolsNotInstalled"
+	case strings.Contains(state, "old"), strings.Contains(state, "out of date"), strings.Contains(state, "outdated"):
+		return "toolsOld"
+	case strings.Contains(state, "running"), strings.Contains(state, "installed"):
+		// vmrun can report "Installed" instead of "Running" for headless/nogui
+		// Workstation/Fusion VMs even when guest ops are still available.
+		return "toolsOk"
+	default:
+		return "toolsNotRunning"
+	}
+}
+
+func normalizeGuestIP(raw string) string {
+	ip := strings.TrimSpace(strings.Trim(raw, `"`))
+	if ip == "" {
+		return ""
+	}
+	parsed := net.ParseIP(ip)
+	if parsed == nil || parsed.IsUnspecified() {
+		return ""
+	}
+	return parsed.String()
+}
+
+func (b *Backend) cachedRuntime(vmx string) (guestRuntimeInfo, bool) {
+	b.cacheMu.RLock()
+	defer b.cacheMu.RUnlock()
+	info, ok := b.cache[vmx]
+	return info, ok
+}
+
+func (b *Backend) storeRuntime(vmx string, info guestRuntimeInfo) {
+	b.cacheMu.Lock()
+	defer b.cacheMu.Unlock()
+	b.cache[vmx] = info
+	b.traceEvent("runtime_cache_store", "vm", vmLabel(vmx), "tools_status", info.ToolsStatus, "ip_address", info.IPAddress, "refreshed_at", info.RefreshedAt)
+}
+
+func (b *Backend) clearRuntime(vmx string) {
+	b.cacheMu.Lock()
+	defer b.cacheMu.Unlock()
+	if _, ok := b.cache[vmx]; ok {
+		delete(b.cache, vmx)
+		b.traceEvent("runtime_cache_clear", "vm", vmLabel(vmx))
+	}
+}
+
+func (b *Backend) runtimeForList(ctx context.Context, vmx string) guestRuntimeInfo {
+	if cached, ok := b.cachedRuntime(vmx); ok {
+		b.traceEvent("runtime_cache_hit", "vm", vmLabel(vmx), "age", time.Since(cached.RefreshedAt).Round(time.Millisecond), "tools_status", cached.ToolsStatus, "ip_address", cached.IPAddress)
+		return cached
+	}
+	b.traceEvent("runtime_cache_miss", "vm", vmLabel(vmx))
+	return guestRuntimeInfo{ToolsStatus: "toolsNotRunning"}
+}
+
+func (b *Backend) queryToolsState(ctx context.Context, vmx string) (string, bool) {
+	started := time.Now()
+	out, err := b.runContext(ctx, ws("checkToolsState", vmx)...)
+	normalized := normalizeToolsStatus(out)
+	b.traceTiming("checkToolsState", started, "vm", vmLabel(vmx), "raw", out, "normalized", normalized, "success", err == nil)
+	if err != nil {
+		b.traceEvent("tools_state_error", "vm", vmLabel(vmx), "error", err)
+		return "", false
+	}
+	return normalized, true
+}
+
+func (b *Backend) loadRuntimeDetails(ctx context.Context, vmx string) (guestRuntimeInfo, bool) {
+	started := time.Now()
+	defer func() {
+		b.traceTiming("loadRuntimeDetails", started, "vm", vmLabel(vmx))
+	}()
+
+	queryCtx, cancel := context.WithTimeout(ctx, guestRuntimeQueryTimeout)
+	defer cancel()
+	b.traceEvent("load_runtime_begin", "vm", vmLabel(vmx), "deadline", contextDeadlineString(queryCtx))
+
+	toolsStatus, ok := b.queryToolsState(queryCtx, vmx)
+	if !ok {
+		b.traceEvent("load_runtime_skipped", "vm", vmLabel(vmx), "reason", "tools_query_failed")
+		return guestRuntimeInfo{}, false
+	}
+
+	info := guestRuntimeInfo{
+		ToolsStatus: toolsStatus,
+		RefreshedAt: time.Now(),
+	}
+	if toolsStatus == "toolsOk" || toolsStatus == "toolsOld" {
+		info.IPAddress = b.resolveGuestIP(queryCtx, vmx)
+	}
+	b.traceEvent("load_runtime_complete", "vm", vmLabel(vmx), "tools_status", info.ToolsStatus, "ip_address", info.IPAddress)
+	return info, true
+}
+
+func (b *Backend) vmInfoFromPath(ctx context.Context, vmxPath string, running map[string]struct{}, refreshRuntime bool) manager.VMInfo {
+	info := manager.VMInfo{Ref: vmxPath}
+
+	vmxData, err := parseVMX(vmxPath)
+	if err == nil {
+		info.Name = vmxData.DisplayName
+		info.GuestOS = vmxData.GuestOS
+		info.NumCPU = vmxData.NumCPU
+		info.MemoryMB = vmxData.MemoryMB
+	}
+
+	if _, on := running[vmxPath]; on {
+		info.PowerState = "poweredOn"
+		b.traceEvent("vm_state_detected", "vm", vmLabel(vmxPath), "state", info.PowerState, "refresh_runtime", refreshRuntime)
+
+		runtimeInfo := b.runtimeForList(ctx, vmxPath)
+		info.ToolsStatus = runtimeInfo.ToolsStatus
+		info.IPAddress = runtimeInfo.IPAddress
+
+		if refreshRuntime {
+			if refreshed, ok := b.loadRuntimeDetails(ctx, vmxPath); ok {
+				info.ToolsStatus = refreshed.ToolsStatus
+				info.IPAddress = refreshed.IPAddress
+				b.storeRuntime(vmxPath, refreshed)
+			} else {
+				b.traceEvent("vm_runtime_refresh_failed", "vm", vmLabel(vmxPath))
+			}
+		}
+
+		if info.ToolsStatus == "" {
+			info.ToolsStatus = "toolsNotRunning"
+		}
+		b.traceEvent("vm_info_ready", "vm", vmLabel(vmxPath), "state", info.PowerState, "tools_status", info.ToolsStatus, "ip_address", info.IPAddress)
+		return info
+	}
+
+	if isSuspended(vmxPath) {
+		info.PowerState = "suspended"
+		info.ToolsStatus = "toolsNotRunning"
+		b.clearRuntime(vmxPath)
+		b.traceEvent("vm_state_detected", "vm", vmLabel(vmxPath), "state", info.PowerState)
+		return info
+	}
+
+	info.PowerState = "poweredOff"
+	info.ToolsStatus = "toolsNotRunning"
+	b.clearRuntime(vmxPath)
+	b.traceEvent("vm_state_detected", "vm", vmLabel(vmxPath), "state", info.PowerState)
+	return info
+}
+
+func (b *Backend) readGuestVariable(ctx context.Context, vmx, scope, key string) string {
+	started := time.Now()
+	out, err := b.runContext(ctx, ws("readVariable", vmx, scope, key)...)
+	b.traceTiming("readGuestVariable", started, "vm", vmLabel(vmx), "scope", scope, "key", key, "success", err == nil, "value", truncateForLog(strings.TrimSpace(out), 120))
+	if err != nil {
+		b.traceEvent("read_guest_variable_error", "vm", vmLabel(vmx), "scope", scope, "key", key, "error", err)
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
+func (b *Backend) resolveGuestIP(ctx context.Context, vmx string) string {
+	started := time.Now()
+	defer func() {
+		b.traceTiming("resolveGuestIP", started, "vm", vmLabel(vmx))
+	}()
+
+	if ip, err := b.runContext(ctx, ws("getGuestIPAddress", vmx)...); err == nil {
+		if normalized := normalizeGuestIP(ip); normalized != "" {
+			b.traceEvent("resolve_guest_ip_success", "vm", vmLabel(vmx), "source", "getGuestIPAddress", "ip_address", normalized)
+			return normalized
+		}
+		b.traceEvent("resolve_guest_ip_empty", "vm", vmLabel(vmx), "source", "getGuestIPAddress", "raw", truncateForLog(strings.TrimSpace(ip), 120))
+	} else {
+		b.traceEvent("resolve_guest_ip_error", "vm", vmLabel(vmx), "source", "getGuestIPAddress", "error", err)
+	}
+
+	// Fallbacks for Workstation/Fusion headless mode, where getGuestIPAddress
+	// can fail even though VMware Tools guest variables are populated.
+	candidates := []struct {
+		scope string
+		key   string
+	}{
+		{scope: "guestVar", key: "ip"},
+		{scope: "runtimeConfig", key: "guestinfo.ip"},
+		{scope: "runtimeConfig", key: "guestinfo.ipAddress"},
+	}
+
+	for _, candidate := range candidates {
+		if normalized := normalizeGuestIP(b.readGuestVariable(ctx, vmx, candidate.scope, candidate.key)); normalized != "" {
+			b.traceEvent("resolve_guest_ip_success", "vm", vmLabel(vmx), "source", candidate.scope+":"+candidate.key, "ip_address", normalized)
+			return normalized
+		}
+	}
+
+	b.traceEvent("resolve_guest_ip_failed", "vm", vmLabel(vmx))
+	return ""
 }
 
 // ws prefixes args with the -T ws Workstation flag.
@@ -85,8 +567,13 @@ func guest(user, pass string, args ...string) []string {
 
 // runningVMSet returns a set of .vmx paths that are currently powered on.
 func (b *Backend) runningVMSet() (map[string]struct{}, error) {
-	out, err := b.run("list")
+	return b.runningVMSetContext(context.Background())
+}
+
+func (b *Backend) runningVMSetContext(ctx context.Context) (map[string]struct{}, error) {
+	out, err := b.runContext(ctx, "list")
 	if err != nil {
+		b.traceEvent("running_vm_set_error", "error", err)
 		return nil, err
 	}
 	set := make(map[string]struct{})
@@ -96,37 +583,51 @@ func (b *Backend) runningVMSet() (map[string]struct{}, error) {
 			set[line] = struct{}{}
 		}
 	}
+	b.traceEvent("running_vm_set_ready", "count", len(set), "vms", keysFromSet(set))
 	return set, nil
 }
 
 // --- VM lifecycle ---
 
-func (b *Backend) ListVMs(_ context.Context) ([]manager.VMInfo, error) {
+func (b *Backend) ListVMs(ctx context.Context) ([]manager.VMInfo, error) {
+	started := time.Now()
+	inventoryStarted := time.Now()
+	inventorySource := "inventory"
+	b.traceEvent("list_vms_begin", "vm_dir", b.vmDir)
 	invPath, err := inventoryPath()
 	if err != nil {
+		b.traceEvent("list_vms_inventory_path_error", "error", err)
 		return nil, fmt.Errorf("locating inventory: %w", err)
 	}
 
 	var vmxPaths []string
 	if b.vmDir != "" {
+		inventorySource = "vm_dir"
 		vmxPaths, err = scanDirectory(b.vmDir)
 	} else {
 		vmxPaths, err = parseInventory(invPath)
 		if err != nil {
+			b.traceEvent("list_vms_inventory_parse_error", "inventory_path", invPath, "error", err)
 			return nil, err
 		}
 		if len(vmxPaths) == 0 {
+			inventorySource = "scan_fallback"
 			vmxPaths, err = scanVMDirectories()
 		}
 	}
 	if err != nil {
+		b.traceEvent("list_vms_inventory_error", "source", inventorySource, "error", err)
 		return nil, err
 	}
+	inventoryDur := time.Since(inventoryStarted)
+	b.traceEvent("list_vms_inventory_ready", "source", inventorySource, "inventory_path", invPath, "vm_count", len(vmxPaths), "vms", vmLabels(vmxPaths))
 
-	running, err := b.runningVMSet()
+	runningStarted := time.Now()
+	running, err := b.runningVMSetContext(ctx)
 	if err != nil {
 		return nil, err
 	}
+	runningDur := time.Since(runningStarted)
 
 	// Fetch per-VM details concurrently to avoid O(2N) serial vmrun calls.
 	type result struct {
@@ -135,60 +636,97 @@ func (b *Backend) ListVMs(_ context.Context) ([]manager.VMInfo, error) {
 	}
 	results := make([]manager.VMInfo, len(vmxPaths))
 	ch := make(chan result, len(vmxPaths))
+	sem := make(chan struct{}, vmListDetailConcurrency)
+
+	staleRefreshBudget := vmListRefreshPerCall
+	var staleMu sync.Mutex
 
 	var wg sync.WaitGroup
+	detailStarted := time.Now()
 	for i, vmx := range vmxPaths {
 		wg.Add(1)
 		go func(idx int, vmxPath string) {
 			defer wg.Done()
-			info := manager.VMInfo{Ref: vmxPath}
+			sem <- struct{}{}
+			defer func() { <-sem }()
 
-			vmxData, err := parseVMX(vmxPath)
-			if err == nil {
-				info.Name = vmxData.DisplayName
-				info.GuestOS = vmxData.GuestOS
-				info.NumCPU = vmxData.NumCPU
-				info.MemoryMB = vmxData.MemoryMB
+			cached, hasCached := b.cachedRuntime(vmxPath)
+			cacheAge := time.Duration(0)
+			if hasCached {
+				cacheAge = time.Since(cached.RefreshedAt)
 			}
-
-			if _, on := running[vmxPath]; on {
-				info.PowerState = "poweredOn"
-				info.ToolsStatus = b.checkToolsState(vmxPath)
-				if info.ToolsStatus == "toolsOk" || info.ToolsStatus == "toolsOld" {
-					if ip, err := b.run(ws("getGuestIPAddress", vmxPath)...); err == nil {
-						info.IPAddress = strings.TrimSpace(ip)
-					}
+			needsRefresh := !hasCached || cacheAge > guestRuntimeCacheTTL
+			refreshRuntime := false
+			if needsRefresh {
+				staleMu.Lock()
+				if staleRefreshBudget > 0 {
+					staleRefreshBudget--
+					refreshRuntime = true
 				}
-			} else if isSuspended(vmxPath) {
-				info.PowerState = "suspended"
-				info.ToolsStatus = "toolsNotRunning"
-			} else {
-				info.PowerState = "poweredOff"
-				info.ToolsStatus = "toolsNotRunning"
+				staleMu.Unlock()
 			}
+			b.traceEvent(
+				"list_vms_vm_plan",
+				"vm", vmLabel(vmxPath),
+				"has_cached_runtime", hasCached,
+				"cache_age", cacheAge.Round(time.Millisecond),
+				"needs_refresh", needsRefresh,
+				"refresh_runtime", refreshRuntime,
+			)
+
+			info := b.vmInfoFromPath(ctx, vmxPath, running, refreshRuntime)
 
 			ch <- result{idx: idx, info: info}
 		}(i, vmx)
 	}
 
 	wg.Wait()
+	detailDur := time.Since(detailStarted)
 	close(ch)
 	for r := range ch {
 		results[r.idx] = r.info
 	}
+	b.traceTiming(
+		"ListVMs",
+		started,
+		"inventory", inventoryDur.Round(time.Millisecond),
+		"running", runningDur.Round(time.Millisecond),
+		"detail", detailDur.Round(time.Millisecond),
+		"vm_count", len(vmxPaths),
+		"powered_on", len(running),
+		"inventory_source", inventorySource,
+	)
+	b.traceEvent("list_vms_complete", "vm_count", len(results), "powered_on", len(running))
 	return results, nil
 }
 
-// checkToolsState returns a toolsStatus string for a running VM.
-func (b *Backend) checkToolsState(vmx string) string {
-	out, err := b.run(ws("checkToolsState", vmx)...)
+func (b *Backend) GetVM(ctx context.Context, vmRef string) (manager.VMInfo, error) {
+	started := time.Now()
+	b.traceEvent("get_vm_begin", "vm", vmLabel(vmRef))
+	running, err := b.runningVMSetContext(ctx)
 	if err != nil {
+		b.traceEvent("get_vm_running_set_error", "vm", vmLabel(vmRef), "error", err)
+		return manager.VMInfo{}, err
+	}
+
+	info := b.vmInfoFromPath(ctx, vmRef, running, true)
+	if info.Name == "" {
+		if _, err := os.Stat(vmRef); err != nil {
+			b.traceEvent("get_vm_not_found", "vm", vmLabel(vmRef), "error", err)
+			return manager.VMInfo{}, fmt.Errorf("VM %q not found", vmRef)
+		}
+	}
+	b.traceTiming("GetVM", started, "vm", vmLabel(vmRef), "power_state", info.PowerState, "tools_status", info.ToolsStatus, "ip_address", info.IPAddress)
+	return info, nil
+}
+
+// checkToolsState returns a toolsStatus string for a running VM.
+func (b *Backend) checkToolsState(ctx context.Context, vmx string) string {
+	out, ok := b.queryToolsState(ctx, vmx)
+	if !ok {
 		return "toolsNotRunning"
 	}
-	if strings.EqualFold(out, "running") {
-		return "toolsOk"
-	}
-	return "toolsNotRunning"
+	return out
 }
 
 // isSuspended checks for a .vmss suspend-state file alongside the .vmx.
@@ -199,23 +737,49 @@ func isSuspended(vmx string) bool {
 	return err == nil
 }
 
-func (b *Backend) PowerOn(_ context.Context, vmRef string) error {
-	_, err := b.run(ws("start", vmRef)...)
+func (b *Backend) PowerOn(ctx context.Context, vmRef string) error {
+	started := time.Now()
+	b.traceEvent("power_on_begin", "vm", vmLabel(vmRef))
+	// Use "nogui" so vmrun returns immediately after starting the VM rather
+	// than blocking until the Workstation window is closed.
+	_, err := b.runContext(ctx, ws("start", vmRef, "nogui")...)
+	b.traceTiming("PowerOn", started, "vm", vmLabel(vmRef), "success", err == nil)
+	if err != nil {
+		b.traceEvent("power_on_error", "vm", vmLabel(vmRef), "error", err)
+	}
 	return err
 }
 
-func (b *Backend) PowerOff(_ context.Context, vmRef string) error {
-	_, err := b.run(ws("stop", vmRef, "hard")...)
+func (b *Backend) PowerOff(ctx context.Context, vmRef string) error {
+	started := time.Now()
+	b.traceEvent("power_off_begin", "vm", vmLabel(vmRef))
+	_, err := b.runContext(ctx, ws("stop", vmRef, "hard")...)
+	b.traceTiming("PowerOff", started, "vm", vmLabel(vmRef), "success", err == nil)
+	if err != nil {
+		b.traceEvent("power_off_error", "vm", vmLabel(vmRef), "error", err)
+	}
 	return err
 }
 
-func (b *Backend) Reset(_ context.Context, vmRef string) error {
-	_, err := b.run(ws("reset", vmRef, "hard")...)
+func (b *Backend) Reset(ctx context.Context, vmRef string) error {
+	started := time.Now()
+	b.traceEvent("reset_begin", "vm", vmLabel(vmRef))
+	_, err := b.runContext(ctx, ws("reset", vmRef, "hard")...)
+	b.traceTiming("Reset", started, "vm", vmLabel(vmRef), "success", err == nil)
+	if err != nil {
+		b.traceEvent("reset_error", "vm", vmLabel(vmRef), "error", err)
+	}
 	return err
 }
 
-func (b *Backend) Suspend(_ context.Context, vmRef string) error {
-	_, err := b.run(ws("suspend", vmRef)...)
+func (b *Backend) Suspend(ctx context.Context, vmRef string) error {
+	started := time.Now()
+	b.traceEvent("suspend_begin", "vm", vmLabel(vmRef))
+	_, err := b.runContext(ctx, ws("suspend", vmRef)...)
+	b.traceTiming("Suspend", started, "vm", vmLabel(vmRef), "success", err == nil)
+	if err != nil {
+		b.traceEvent("suspend_error", "vm", vmLabel(vmRef), "error", err)
+	}
 	return err
 }
 
@@ -223,9 +787,12 @@ func (b *Backend) Suspend(_ context.Context, vmRef string) error {
 // vmrun identifies snapshots by name. Ref == Name for this backend.
 // Tree depth and IsCurrent are not available from vmrun's output.
 
-func (b *Backend) ListSnapshots(_ context.Context, vmRef string) ([]manager.SnapshotInfo, error) {
-	out, err := b.run(ws("listSnapshots", vmRef)...)
+func (b *Backend) ListSnapshots(ctx context.Context, vmRef string) ([]manager.SnapshotInfo, error) {
+	started := time.Now()
+	b.traceEvent("list_snapshots_begin", "vm", vmLabel(vmRef))
+	out, err := b.runContext(ctx, ws("listSnapshots", vmRef)...)
 	if err != nil {
+		b.traceEvent("list_snapshots_error", "vm", vmLabel(vmRef), "error", err)
 		return nil, err
 	}
 
@@ -242,38 +809,51 @@ func (b *Backend) ListSnapshots(_ context.Context, vmRef string) ([]manager.Snap
 			Name: line,
 		})
 	}
+	b.traceTiming("ListSnapshots", started, "vm", vmLabel(vmRef), "snapshot_count", len(snaps))
 	return snaps, nil
 }
 
-func (b *Backend) CreateSnapshot(_ context.Context, emit jobs.EmitFn, req manager.CreateSnapshotRequest) error {
+func (b *Backend) CreateSnapshot(ctx context.Context, emit jobs.EmitFn, req manager.CreateSnapshotRequest) error {
+	started := time.Now()
+	b.traceEvent("create_snapshot_begin", "vm", vmLabel(req.VMRef), "snapshot_name", req.Name)
 	emit(10, "Creating snapshot...")
-	_, err := b.run(ws("snapshot", req.VMRef, req.Name)...)
+	_, err := b.runContext(ctx, ws("snapshot", req.VMRef, req.Name)...)
 	if err != nil {
+		b.traceEvent("create_snapshot_error", "vm", vmLabel(req.VMRef), "snapshot_name", req.Name, "error", err)
 		return err
 	}
 	emit(100, fmt.Sprintf("Snapshot %q created", req.Name))
+	b.traceTiming("CreateSnapshot", started, "vm", vmLabel(req.VMRef), "snapshot_name", req.Name)
 	return nil
 }
 
-func (b *Backend) RevertSnapshot(_ context.Context, emit jobs.EmitFn, snapRef string) error {
+func (b *Backend) RevertSnapshot(ctx context.Context, emit jobs.EmitFn, snapRef string) error {
+	started := time.Now()
 	vmRef, snapName := splitSnapRef(snapRef)
+	b.traceEvent("revert_snapshot_begin", "vm", vmLabel(vmRef), "snapshot_name", snapName)
 	emit(10, "Reverting to snapshot...")
-	_, err := b.run(ws("revertToSnapshot", vmRef, snapName)...)
+	_, err := b.runContext(ctx, ws("revertToSnapshot", vmRef, snapName)...)
 	if err != nil {
+		b.traceEvent("revert_snapshot_error", "vm", vmLabel(vmRef), "snapshot_name", snapName, "error", err)
 		return err
 	}
 	emit(100, "Reverted successfully")
+	b.traceTiming("RevertSnapshot", started, "vm", vmLabel(vmRef), "snapshot_name", snapName)
 	return nil
 }
 
-func (b *Backend) DeleteSnapshot(_ context.Context, emit jobs.EmitFn, snapRef string, _ bool) error {
+func (b *Backend) DeleteSnapshot(ctx context.Context, emit jobs.EmitFn, snapRef string, _ bool) error {
+	started := time.Now()
 	vmRef, snapName := splitSnapRef(snapRef)
+	b.traceEvent("delete_snapshot_begin", "vm", vmLabel(vmRef), "snapshot_name", snapName)
 	emit(10, "Deleting snapshot...")
-	_, err := b.run(ws("deleteSnapshot", vmRef, snapName)...)
+	_, err := b.runContext(ctx, ws("deleteSnapshot", vmRef, snapName)...)
 	if err != nil {
+		b.traceEvent("delete_snapshot_error", "vm", vmLabel(vmRef), "snapshot_name", snapName, "error", err)
 		return err
 	}
 	emit(100, "Deleted successfully")
+	b.traceTiming("DeleteSnapshot", started, "vm", vmLabel(vmRef), "snapshot_name", snapName)
 	return nil
 }
 
@@ -299,30 +879,40 @@ func guestRunEnv(guestOS string) (isWin bool, outPath string) {
 	return false, "/tmp/" + outName
 }
 
-func (b *Backend) Upload(_ context.Context, emit jobs.EmitFn, req manager.UploadRequest) error {
+func (b *Backend) Upload(ctx context.Context, emit jobs.EmitFn, req manager.UploadRequest) error {
+	started := time.Now()
+	b.traceEvent("upload_begin", "vm", vmLabel(req.VMRef), "local_path", req.LocalPath, "guest_path", req.GuestPath)
 	emit(10, "Copying file to guest...")
-	_, err := b.run(guest(req.Username, req.Password,
+	_, err := b.runContext(ctx, guest(req.Username, req.Password,
 		"copyFileFromHostToGuest", req.VMRef, req.LocalPath, req.GuestPath)...)
 	if err != nil {
+		b.traceEvent("upload_error", "vm", vmLabel(req.VMRef), "local_path", req.LocalPath, "guest_path", req.GuestPath, "error", err)
 		return fmt.Errorf("upload: %w", err)
 	}
 	emit(100, "Upload complete.")
+	b.traceTiming("Upload", started, "vm", vmLabel(req.VMRef), "local_path", req.LocalPath, "guest_path", req.GuestPath)
 	return nil
 }
 
-func (b *Backend) Download(_ context.Context, emit jobs.EmitFn, req manager.DownloadRequest) error {
+func (b *Backend) Download(ctx context.Context, emit jobs.EmitFn, req manager.DownloadRequest) error {
+	started := time.Now()
+	b.traceEvent("download_begin", "vm", vmLabel(req.VMRef), "guest_path", req.GuestPath, "local_path", req.LocalPath)
 	emit(10, "Copying file from guest...")
-	_, err := b.run(guest(req.Username, req.Password,
+	_, err := b.runContext(ctx, guest(req.Username, req.Password,
 		"copyFileFromGuestToHost", req.VMRef, req.GuestPath, req.LocalPath)...)
 	if err != nil {
+		b.traceEvent("download_error", "vm", vmLabel(req.VMRef), "guest_path", req.GuestPath, "local_path", req.LocalPath, "error", err)
 		return fmt.Errorf("download: %w", err)
 	}
 	emit(100, "Download complete.")
+	b.traceTiming("Download", started, "vm", vmLabel(req.VMRef), "guest_path", req.GuestPath, "local_path", req.LocalPath)
 	return nil
 }
 
-func (b *Backend) GuestRun(_ context.Context, emit jobs.EmitFn, req manager.RunRequest) error {
+func (b *Backend) GuestRun(ctx context.Context, emit jobs.EmitFn, req manager.RunRequest) error {
+	started := time.Now()
 	isWin, outPath := guestRunEnv(req.GuestOS)
+	b.traceEvent("guest_run_begin", "vm", vmLabel(req.VMRef), "guest_os", req.GuestOS, "guest_is_windows", isWin, "output_path", outPath, "command", truncateForLog(req.Command, 200))
 
 	emit(10, "Executing command...")
 	var runErr error
@@ -335,9 +925,9 @@ func (b *Backend) GuestRun(_ context.Context, emit jobs.EmitFn, req manager.RunR
 			guest(req.Username, req.Password, "runProgramInGuest", req.VMRef, manager.WinPSExePath),
 			manager.WinPSCmdArgList(req.Command, outPath)...,
 		)
-		_, runErr = b.run(args...)
+		_, runErr = b.runContext(ctx, args...)
 	} else {
-		_, runErr = b.run(guest(req.Username, req.Password,
+		_, runErr = b.runContext(ctx, guest(req.Username, req.Password,
 			"runProgramInGuest", req.VMRef,
 			"/bin/sh", "-c", req.Command+" > "+outPath+" 2>&1")...)
 	}
@@ -346,6 +936,7 @@ func (b *Backend) GuestRun(_ context.Context, emit jobs.EmitFn, req manager.RunR
 	// but the output file may still exist. Only bail out for genuine vmrun errors
 	// (auth failures, tools not running, etc.) — not guest exit-code errors.
 	if runErr != nil && !strings.Contains(runErr.Error(), "non-zero exit code") {
+		b.traceEvent("guest_run_vmrun_error", "vm", vmLabel(req.VMRef), "error", runErr)
 		return fmt.Errorf("running command: %w", runErr)
 	}
 
@@ -358,9 +949,10 @@ func (b *Backend) GuestRun(_ context.Context, emit jobs.EmitFn, req manager.RunR
 	tmpFile.Close()
 	defer os.Remove(tmpPath)
 
-	_, downloadErr := b.run(guest(req.Username, req.Password,
+	_, downloadErr := b.runContext(ctx, guest(req.Username, req.Password,
 		"copyFileFromGuestToHost", req.VMRef, outPath, tmpPath)...)
 	if downloadErr != nil {
+		b.traceEvent("guest_run_download_error", "vm", vmLabel(req.VMRef), "error", downloadErr)
 		if runErr != nil {
 			return fmt.Errorf("running command: %w\ndownload: %w", runErr, downloadErr)
 		}
@@ -368,7 +960,7 @@ func (b *Backend) GuestRun(_ context.Context, emit jobs.EmitFn, req manager.RunR
 	}
 
 	// best-effort cleanup of the temp file in the guest
-	_, _ = b.run(guest(req.Username, req.Password,
+	_, _ = b.runContext(ctx, guest(req.Username, req.Password,
 		"deleteFileInGuest", req.VMRef, outPath)...)
 
 	data, err := os.ReadFile(tmpPath)
@@ -384,27 +976,38 @@ func (b *Backend) GuestRun(_ context.Context, emit jobs.EmitFn, req manager.RunR
 		output = "(no output)"
 	}
 	if runErr != nil {
-		emit(100, output+"\n\n["+runErr.Error()+"]")
+		b.traceEvent("guest_run_nonzero_exit", "vm", vmLabel(req.VMRef), "output_preview", truncateForLog(output, 200), "error", runErr)
+		emit(95, output+"\n\n["+runErr.Error()+"]")
+		emit(100, "Command finished with non-zero exit status.")
+		b.traceTiming("GuestRun", started, "vm", vmLabel(req.VMRef), "success", true, "nonzero_exit", true, "output_bytes", len(data))
 		return nil
 	}
-	emit(100, output)
+	b.traceEvent("guest_run_complete", "vm", vmLabel(req.VMRef), "output_preview", truncateForLog(output, 200))
+	emit(95, output)
+	emit(100, "Command completed.")
+	b.traceTiming("GuestRun", started, "vm", vmLabel(req.VMRef), "success", true, "nonzero_exit", false, "output_bytes", len(data))
 	return nil
 }
 
 // --- Inventory (unsupported) ---
 
 func (b *Backend) ListHosts(_ context.Context) ([]manager.HostInfo, error) {
+	b.traceEvent("list_hosts_unsupported")
 	return nil, fmt.Errorf("host inventory not available for Workstation")
 }
 
 func (b *Backend) ListDatastores(_ context.Context) ([]manager.DatastoreInfo, error) {
+	b.traceEvent("list_datastores_unsupported")
 	return nil, fmt.Errorf("datastore inventory not available for Workstation")
 }
 
 func (b *Backend) ListNetworks(_ context.Context) (manager.NetworkSummary, error) {
+	started := time.Now()
+	b.traceEvent("list_networks_begin")
 	// Step 1: Enumerate VMware virtual network adapters on the host OS.
 	ifaces, err := net.Interfaces()
 	if err != nil {
+		b.traceEvent("list_networks_interface_error", "error", err)
 		return manager.NetworkSummary{}, fmt.Errorf("listing network interfaces: %w", err)
 	}
 
@@ -443,6 +1046,8 @@ func (b *Backend) ListNetworks(_ context.Context) (manager.NetworkSummary, error
 				vmnetVMs[n] = manager.AppendUnique(vmnetVMs[n], name)
 			}
 		}
+	} else {
+		b.traceEvent("list_networks_all_vmx_error", "error", err)
 	}
 
 	// Step 3: Assemble sorted switch list.
@@ -464,22 +1069,27 @@ func (b *Backend) ListNetworks(_ context.Context) (manager.NetworkSummary, error
 		})
 	}
 
+	b.traceTiming("ListNetworks", started, "switch_count", len(switches))
 	return manager.NetworkSummary{Switches: switches}, nil
 }
 
 // allVMXPaths returns the VMX paths from the configured directory or the default inventory.
 func (b *Backend) allVMXPaths() ([]string, error) {
 	if b.vmDir != "" {
+		b.traceEvent("all_vmx_paths_begin", "source", "vm_dir", "vm_dir", b.vmDir)
 		return scanDirectory(b.vmDir)
 	}
 	invPath, err := inventoryPath()
 	if err != nil {
+		b.traceEvent("all_vmx_paths_inventory_path_error", "error", err)
 		return nil, err
 	}
 	paths, err := parseInventory(invPath)
 	if err != nil || len(paths) == 0 {
+		b.traceEvent("all_vmx_paths_scan_fallback", "inventory_path", invPath, "parse_error", err, "inventory_count", len(paths))
 		return scanVMDirectories()
 	}
+	b.traceEvent("all_vmx_paths_ready", "source", "inventory", "inventory_path", invPath, "vm_count", len(paths), "vms", vmLabels(paths))
 	return paths, nil
 }
 
@@ -582,8 +1192,11 @@ func vmnetType(n int) string {
 }
 
 func (b *Backend) InstallTools(ctx context.Context, emit jobs.EmitFn, vmRef string) error {
+	started := time.Now()
+	b.traceEvent("install_tools_begin", "vm", vmLabel(vmRef))
 	info, err := parseVMX(vmRef)
 	if err == nil && !strings.HasPrefix(strings.ToLower(info.GuestOS), "win") {
+		b.traceEvent("install_tools_rejected", "vm", vmLabel(vmRef), "guest_os", info.GuestOS, "reason", "non_windows_guest")
 		return fmt.Errorf("bundled VMware Tools is not recommended for Linux/macOS guests; install open-vm-tools via the guest package manager instead")
 	}
 
@@ -599,15 +1212,18 @@ func (b *Backend) InstallTools(ctx context.Context, emit jobs.EmitFn, vmRef stri
 	cmd := exec.CommandContext(mountCtx, b.vmrunPath, "-T", "ws", "installTools", vmRef)
 	configureCmd(cmd)
 	_, cmdErr := cmd.Output()
+	b.traceTiming("InstallToolsMount", started, "vm", vmLabel(vmRef), "success", cmdErr == nil)
 
 	// Both a quick non-zero exit (no guest agent to respond) and a timeout (agent
 	// never responded) mean the same thing: tools are not installed. In either case
 	// the ISO is already mounted at the hypervisor level; guide the user.
 	if cmdErr != nil {
+		b.traceEvent("install_tools_mount_incomplete", "vm", vmLabel(vmRef), "error", cmdErr)
 		emit(100, "VMware Tools ISO mounted. Open the CD-ROM drive inside the guest and run setup64.exe (or setup.exe on 32-bit) to complete installation.")
 		return nil
 	}
 
 	emit(100, "VMware Tools installation initiated in guest.")
+	b.traceEvent("install_tools_complete", "vm", vmLabel(vmRef))
 	return nil
 }

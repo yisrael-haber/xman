@@ -1,12 +1,12 @@
 import { useState } from 'react';
 import { manager } from '../../../../wailsjs/go/models';
 import { VMPowerOn, VMPowerOff, VMReset, VMSuspend, VMInstallTools } from '../../../../wailsjs/go/manager/Manager';
-import { EventsOn, EventsOff } from '../../../../wailsjs/runtime/runtime';
+import { EventsOn } from '../../../../wailsjs/runtime/runtime';
 
 interface Props {
     vm: manager.VMInfo;
-    onRefresh: () => void;
-    onJobStarted: (id: string) => void;
+    onRefresh: () => Promise<void>;
+    onJobStarted: (id: string, targetName?: string) => void;
     toolsInstall: boolean;
 }
 
@@ -20,11 +20,14 @@ const TOOLS_LABELS: Record<string, { label: string; ok: boolean }> = {
 type PowerAction = 'on' | 'off' | 'reset' | 'suspend';
 
 export default function VMInfoTab({ vm, onRefresh, onJobStarted, toolsInstall }: Props) {
-    const [busy, setBusy] = useState<PowerAction | null>(null);
-    const [toolsBusy, setToolsBusy] = useState(false);
-    const [error, setError] = useState('');
+    const [busyByVM, setBusyByVM] = useState<Record<string, PowerAction | null>>({});
+    const [toolsBusyByVM, setToolsBusyByVM] = useState<Record<string, boolean>>({});
+    const [errorByVM, setErrorByVM] = useState<Record<string, string>>({});
 
     const tools = TOOLS_LABELS[vm.toolsStatus] ?? { label: vm.toolsStatus, ok: false };
+    const busy = busyByVM[vm.ref] ?? null;
+    const toolsBusy = toolsBusyByVM[vm.ref] ?? false;
+    const error = errorByVM[vm.ref] ?? '';
     const isOn = vm.powerState === 'poweredOn';
     const isOff = vm.powerState === 'poweredOff';
     const isSuspended = vm.powerState === 'suspended';
@@ -35,47 +38,47 @@ export default function VMInfoTab({ vm, onRefresh, onJobStarted, toolsInstall }:
     const toolsButtonLabel = vm.toolsStatus === 'toolsNotInstalled' ? 'Install VMware Tools' : 'Upgrade VMware Tools';
 
     async function runAction(action: PowerAction, fn: () => Promise<string>) {
-        setError('');
-        setBusy(action);
+        setErrorByVM(prev => ({ ...prev, [vm.ref]: '' }));
+        setBusyByVM(prev => ({ ...prev, [vm.ref]: action }));
         try {
             const id = await fn();
-            onJobStarted(id);
+            onJobStarted(id, vm.name || vm.ref);
             const unsub = EventsOn(`job:${id}`, (job: any) => {
                 if (job.status === 'done') {
-                    EventsOff(`job:${id}`);
                     unsub();
-                    setBusy(null);
-                    onRefresh();
+                    void onRefresh().finally(() => {
+                        setBusyByVM(prev => ({ ...prev, [vm.ref]: null }));
+                    });
                 } else if (job.status === 'failed' || job.status === 'cancelled') {
-                    EventsOff(`job:${id}`);
                     unsub();
-                    setBusy(null);
-                    setError(job.error || 'Operation failed');
+                    setBusyByVM(prev => ({ ...prev, [vm.ref]: null }));
+                    setErrorByVM(prev => ({ ...prev, [vm.ref]: job.error || 'Operation failed' }));
                 }
             });
         } catch (e: any) {
-            setError(String(e));
-            setBusy(null);
+            setErrorByVM(prev => ({ ...prev, [vm.ref]: String(e) }));
+            setBusyByVM(prev => ({ ...prev, [vm.ref]: null }));
         }
     }
 
     async function handleInstallTools() {
-        setError('');
-        setToolsBusy(true);
+        setErrorByVM(prev => ({ ...prev, [vm.ref]: '' }));
+        setToolsBusyByVM(prev => ({ ...prev, [vm.ref]: true }));
         try {
             const jobId = await VMInstallTools(vm.ref);
-            onJobStarted(jobId);
+            onJobStarted(jobId, vm.name || vm.ref);
             const unsub = EventsOn(`job:${jobId}`, (job: any) => {
                 if (job.status === 'done' || job.status === 'failed' || job.status === 'cancelled') {
-                    EventsOff(`job:${jobId}`);
                     unsub();
-                    setToolsBusy(false);
-                    if (job.status === 'failed') setError(job.error || 'Tools installation failed');
+                    setToolsBusyByVM(prev => ({ ...prev, [vm.ref]: false }));
+                    if (job.status === 'failed') {
+                        setErrorByVM(prev => ({ ...prev, [vm.ref]: job.error || 'Tools installation failed' }));
+                    }
                 }
             });
         } catch (e: any) {
-            setError(String(e));
-            setToolsBusy(false);
+            setErrorByVM(prev => ({ ...prev, [vm.ref]: String(e) }));
+            setToolsBusyByVM(prev => ({ ...prev, [vm.ref]: false }));
         }
     }
 

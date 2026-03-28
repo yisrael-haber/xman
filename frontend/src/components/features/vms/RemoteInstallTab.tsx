@@ -2,12 +2,13 @@ import { useState, useEffect } from 'react';
 import { manager } from '../../../../wailsjs/go/models';
 import { Install, SSHInstall } from '../../../../wailsjs/go/manager/Manager';
 import { OpenFileDialog } from '../../../../wailsjs/go/main/App';
+import useSSHKeys from '../../../hooks/useSSHKeys';
 
 type Mode = 'vmware' | 'ssh';
 
 interface Props {
     vm: manager.VMInfo;
-    onJobStarted: (id: string) => void;
+    onJobStarted: (id: string, targetName?: string) => void;
 }
 
 const SUPPORTED_EXTS = ['msi', 'msix', 'msixbundle', 'exe', 'deb', 'rpm'];
@@ -40,13 +41,24 @@ export default function RemoteInstallTab({ vm, onJobStarted }: Props) {
     const [username,  setUsername]  = useState('');
     const [password,  setPassword]  = useState('');
     const [sshHost,   setSshHost]   = useState(vm.ipAddress || '');
-    const [sshPort,   setSshPort]   = useState(22);
+    const [keyLabel,  setKeyLabel]  = useState('');
     const [localPath, setLocalPath] = useState('');
     const [command,   setCommand]   = useState('');
     const [busy,      setBusy]      = useState(false);
     const [error,     setError]     = useState('');
+    const { keys, error: keysError } = useSSHKeys();
 
     useEffect(() => { setSshHost(vm.ipAddress || ''); }, [vm.ref, vm.ipAddress]);
+
+    useEffect(() => {
+        if (!keys.length) {
+            setKeyLabel('');
+            return;
+        }
+        if (!keyLabel || !keys.some(k => k.label === keyLabel)) {
+            setKeyLabel(keys[0].label);
+        }
+    }, [keys, keyLabel]);
 
     // Auto-derive install command when the selected file changes.
     useEffect(() => {
@@ -54,6 +66,8 @@ export default function RemoteInstallTab({ vm, onJobStarted }: Props) {
     }, [localPath]);
 
     const toolsOk = vm.toolsStatus === 'toolsOk' || vm.toolsStatus === 'toolsOld';
+    const selectedKey = keys.find(k => k.label === keyLabel);
+    const sshUser = selectedKey?.defaultUser?.trim() || '';
 
     async function pickFile() {
         const p = await OpenFileDialog('Select installer package');
@@ -66,8 +80,8 @@ export default function RemoteInstallTab({ vm, onJobStarted }: Props) {
             let id: string;
             if (mode === 'ssh') {
                 id = await SSHInstall({
-                    host: sshHost, port: sshPort,
-                    username, password,
+                    host: sshHost,
+                    keyLabel,
                     localPath, guestOS: vm.guestOS,
                     command,
                 });
@@ -79,7 +93,7 @@ export default function RemoteInstallTab({ vm, onJobStarted }: Props) {
                     command,
                 });
             }
-            onJobStarted(id);
+            onJobStarted(id, vm.name || vm.ref);
         } catch (e: any) {
             setError(String(e));
         } finally {
@@ -89,13 +103,13 @@ export default function RemoteInstallTab({ vm, onJobStarted }: Props) {
 
     const ext = localPath.split('.').pop()?.toLowerCase() ?? '';
     const validExt = SUPPORTED_EXTS.includes(ext);
-    const sshReady = !!sshHost && sshPort > 0 && !!username;
+    const sshReady = !!sshHost.trim() && !!keyLabel && !!sshUser;
     const canInstall = !busy && !!localPath && validExt && !!command &&
         (mode === 'ssh' ? sshReady : (!!username && toolsOk));
 
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-            <div className="form-section" style={{ padding: '1rem 1.25rem', flexShrink: 0, alignSelf: 'center', width: '420px' }}>
+        <div className="tab-body tab-body--fill tab-body--centered">
+            <div className="form-section tab-stack" style={{ flexShrink: 0 }}>
                 <div className="mode-toggle" style={{ alignSelf: 'center' }}>
                     <button className={`mode-btn ${mode === 'vmware' ? 'mode-btn--active' : ''}`}
                         onClick={() => setMode('vmware')}>VMware</button>
@@ -103,33 +117,59 @@ export default function RemoteInstallTab({ vm, onJobStarted }: Props) {
                         onClick={() => setMode('ssh')}>SSH / SFTP</button>
                 </div>
 
-                <div className="cred-row">
-                    <div className="field field--inline">
-                        <label>Username</label>
-                        <input value={username} onChange={e => setUsername(e.target.value)}
-                            placeholder="Administrator" autoComplete="off" />
-                    </div>
-                    <div className="field field--inline">
-                        <label>Password</label>
-                        <input type="password" value={password} onChange={e => setPassword(e.target.value)}
-                            autoComplete="off" />
-                    </div>
-                </div>
-
-                {mode === 'ssh' && (
+                {mode === 'vmware' ? (
                     <div className="cred-row">
                         <div className="field field--inline">
-                            <label>Host</label>
-                            <input value={sshHost} onChange={e => setSshHost(e.target.value)}
-                                placeholder="192.168.1.100" autoComplete="off" />
+                            <label>Username</label>
+                            <input value={username} onChange={e => setUsername(e.target.value)}
+                                placeholder="Administrator" autoComplete="off" />
                         </div>
-                        <div className="field field--inline field--narrow">
-                            <label>Port</label>
-                            <input type="number" value={sshPort}
-                                onChange={e => setSshPort(parseInt(e.target.value) || 22)}
-                                min={1} max={65535} />
+                        <div className="field field--inline">
+                            <label>Password</label>
+                            <input type="password" value={password} onChange={e => setPassword(e.target.value)}
+                                autoComplete="off" />
                         </div>
                     </div>
+                ) : (
+                    <>
+                        {keysError && <p className="form-error">{keysError}</p>}
+                        {!keysError && keys.length === 0 && (
+                            <div className="notice notice--warn">
+                                No SSH keys found. Create one in SSH Keys first.
+                            </div>
+                        )}
+
+                        <div className="cred-row">
+                            <div className="field field--inline">
+                                <label>Host</label>
+                                <input value={sshHost} onChange={e => setSshHost(e.target.value)}
+                                    placeholder="192.168.1.100" autoComplete="off" />
+                            </div>
+                            <div className="field field--inline">
+                                <label>Key</label>
+                                <select value={keyLabel} onChange={e => setKeyLabel(e.target.value)} disabled={!keys.length}>
+                                    {keys.map(k => (
+                                        <option key={k.label} value={k.label}>
+                                            {k.label} ({k.algorithm})
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                        </div>
+
+                        <div className="cred-row">
+                            <div className="field field--inline">
+                                <label>User</label>
+                                <input value={sshUser} readOnly placeholder="Set a default user on the selected key" />
+                            </div>
+                        </div>
+
+                        {selectedKey && !sshUser && (
+                            <div className="notice notice--warn">
+                                The selected key has no default user. Set one in SSH Keys or choose a different key.
+                            </div>
+                        )}
+                    </>
                 )}
 
                 {mode === 'vmware' && !toolsOk && (
@@ -139,11 +179,7 @@ export default function RemoteInstallTab({ vm, onJobStarted }: Props) {
                 )}
             </div>
 
-            <div style={{
-                flex: 1, minHeight: 0, padding: '0 1.25rem 1rem',
-                display: 'flex', flexDirection: 'column', gap: '0.75rem',
-                alignSelf: 'center', width: '420px', boxSizing: 'border-box',
-            }}>
+            <div className="tab-stack tab-stack--grow">
                 <div className="field">
                     <label>Installer package</label>
                     <div className="input-with-btn">

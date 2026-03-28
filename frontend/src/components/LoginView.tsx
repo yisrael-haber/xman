@@ -78,10 +78,9 @@ export default function LoginView({ onConnected }: Props) {
         if (remember) {
             try {
                 await SaveConnectionSettings(req);
-            } catch (saveErr: any) {
-                setLoading(false);
-                setError(`Connected OK, but settings could not be saved: ${String(saveErr)}`);
-                return; // stay on form so user sees the error; click Connect again to proceed
+            } catch {
+                // Saving settings is best-effort; don't leave the UI disconnected
+                // from an already-established backend session.
             }
         }
 

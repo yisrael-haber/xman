@@ -35,11 +35,22 @@ func (m *Manager) SetContext(ctx context.Context) {
 // The work function receives a cancellable context and an emit function for progress.
 // The job context is derived from the Wails app context so jobs are cancelled on shutdown.
 func (m *Manager) Submit(feature, label string, fn func(ctx context.Context, emit EmitFn) error) string {
-	id := uuid.New().String()
-
 	m.mu.RLock()
 	parentCtx := m.ctx
 	m.mu.RUnlock()
+	return m.SubmitWithParent(parentCtx, feature, label, fn)
+}
+
+// SubmitWithParent starts a new job using the provided parent context.
+// If parentCtx is nil, the Wails app context is used as a fallback.
+func (m *Manager) SubmitWithParent(parentCtx context.Context, feature, label string, fn func(ctx context.Context, emit EmitFn) error) string {
+	id := uuid.New().String()
+
+	if parentCtx == nil {
+		m.mu.RLock()
+		parentCtx = m.ctx
+		m.mu.RUnlock()
+	}
 	if parentCtx == nil {
 		parentCtx = context.Background()
 	}

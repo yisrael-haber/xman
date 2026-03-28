@@ -22,6 +22,7 @@ type Backend interface {
 
 	// VM lifecycle
 	ListVMs(ctx context.Context) ([]VMInfo, error)
+	GetVM(ctx context.Context, vmRef string) (VMInfo, error)
 	PowerOn(ctx context.Context, vmRef string) error
 	PowerOff(ctx context.Context, vmRef string) error
 	Reset(ctx context.Context, vmRef string) error

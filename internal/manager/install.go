@@ -23,9 +23,7 @@ type InstallRequest struct {
 // SSHInstallRequest is the payload for installing a package via SSH/SFTP.
 type SSHInstallRequest struct {
 	Host      string `json:"host"`
-	Port      int    `json:"port"`
-	Username  string `json:"username"`
-	Password  string `json:"password"`
+	KeyLabel  string `json:"keyLabel"`
 	LocalPath string `json:"localPath"`
 	GuestOS   string `json:"guestOS"`
 	Command   string `json:"command"` // empty = auto-detect from file extension
@@ -89,7 +87,7 @@ func cleanupCommand(guestPath, guestOS string) string {
 // Install uploads an installer to the guest via VMware Tools and runs it silently.
 func (m *Manager) Install(req InstallRequest) string {
 	filename := filepath.Base(req.LocalPath)
-	return m.jobs.Submit("install", "Install: "+filename, func(ctx context.Context, emit jobs.EmitFn) error {
+	return m.submitJob("install", "Install: "+filename, func(ctx context.Context, emit jobs.EmitFn) error {
 		b, err := m.getBackend()
 		if err != nil {
 			return err
@@ -143,7 +141,7 @@ func (m *Manager) Install(req InstallRequest) string {
 // SSHInstall uploads an installer to the guest via SFTP and runs it silently over SSH.
 func (m *Manager) SSHInstall(req SSHInstallRequest) string {
 	filename := filepath.Base(req.LocalPath)
-	return m.jobs.Submit("install", "SSH Install: "+filename, func(ctx context.Context, emit jobs.EmitFn) error {
+	return m.submitJob("install", "SSH Install: "+filename, func(ctx context.Context, emit jobs.EmitFn) error {
 		guestPath := guestTempPath(req.LocalPath, req.GuestOS)
 
 		cmd := req.Command
@@ -156,16 +154,16 @@ func (m *Manager) SSHInstall(req SSHInstallRequest) string {
 		}
 
 		emit(5, "Uploading installer...")
-		if err := sshtransport.Upload(ctx, emit, req.Host, req.Port, req.Username, req.Password, req.LocalPath, guestPath); err != nil {
+		if err := sshtransport.Upload(ctx, emit, req.Host, req.KeyLabel, req.LocalPath, guestPath); err != nil {
 			return fmt.Errorf("upload: %w", err)
 		}
 
 		emit(55, "Running installer...")
-		runErr := sshtransport.Run(ctx, emit, req.Host, req.Port, req.Username, req.Password, cmd)
+		runErr := sshtransport.Run(ctx, emit, req.Host, req.KeyLabel, cmd)
 
 		// Best-effort cleanup — ignore errors, suppress output.
 		noop := func(_ int, _ string) {}
-		_ = sshtransport.Run(ctx, noop, req.Host, req.Port, req.Username, req.Password, cleanupCommand(guestPath, req.GuestOS))
+		_ = sshtransport.Run(ctx, noop, req.Host, req.KeyLabel, cleanupCommand(guestPath, req.GuestOS))
 
 		return runErr
 	})

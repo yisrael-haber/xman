@@ -12,12 +12,12 @@ import (
 	"xman/internal/jobs"
 	"xman/internal/manager"
 
+	"github.com/vmware/govmomi/guest"
 	"github.com/vmware/govmomi/object"
 	"github.com/vmware/govmomi/view"
 	"github.com/vmware/govmomi/vim25/methods"
 	"github.com/vmware/govmomi/vim25/mo"
 	gsoap "github.com/vmware/govmomi/vim25/soap"
-	"github.com/vmware/govmomi/guest"
 	"github.com/vmware/govmomi/vim25/types"
 )
 
@@ -110,6 +110,24 @@ func (b *Backend) vmObject(ctx context.Context, vmRef string) (*object.VirtualMa
 	}
 	ref := types.ManagedObjectReference{Type: "VirtualMachine", Value: vmRef}
 	return object.NewVirtualMachine(client.Client, ref), nil
+}
+
+func (b *Backend) GetVM(ctx context.Context, vmRef string) (manager.VMInfo, error) {
+	vm, err := b.vmObject(ctx, vmRef)
+	if err != nil {
+		return manager.VMInfo{}, err
+	}
+
+	var obj mo.VirtualMachine
+	if err := vm.Properties(ctx, vm.Reference(), []string{
+		"config.name", "config.guestFullName",
+		"config.hardware.numCPU", "config.hardware.memoryMB",
+		"runtime.powerState", "guest.toolsStatus", "guest.ipAddress",
+	}, &obj); err != nil {
+		return manager.VMInfo{}, fmt.Errorf("reading VM properties: %w", err)
+	}
+
+	return toVMInfo(obj), nil
 }
 
 func (b *Backend) PowerOn(ctx context.Context, vmRef string) error {
@@ -458,7 +476,8 @@ func (b *Backend) GuestRun(ctx context.Context, emit jobs.EmitFn, req manager.Ru
 	if output == "" {
 		output = "(no output)"
 	}
-	emit(100, output)
+	emit(95, output)
+	emit(100, "Command completed.")
 	return nil
 }
 

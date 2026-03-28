@@ -2,28 +2,40 @@ import { useState, useEffect } from 'react';
 import { manager } from '../../../../wailsjs/go/models';
 import { Upload, Download, SSHUpload, SSHDownload } from '../../../../wailsjs/go/manager/Manager';
 import { OpenFileDialog, SaveFileDialog } from '../../../../wailsjs/go/main/App';
+import useSSHKeys from '../../../hooks/useSSHKeys';
 
 type Mode = 'vmware' | 'ssh';
 
 interface Props {
     vm: manager.VMInfo;
-    onJobStarted: (id: string) => void;
+    onJobStarted: (id: string, targetName?: string) => void;
 }
 
 
 export default function FileTransferTab({ vm, onJobStarted }: Props) {
     const [mode, setMode] = useState<Mode>('vmware');
 
-    // Shared credentials across both modes
+    // VMware guest-ops credentials
     const [username, setUsername] = useState('');
     const [password, setPassword] = useState('');
 
-    // SSH connection params
+    // SSH key-based params
     const [sshHost, setSshHost] = useState(vm.ipAddress || '');
-    const [sshPort, setSshPort] = useState(22);
+    const [keyLabel, setKeyLabel] = useState('');
+    const { keys, error: keysError } = useSSHKeys();
 
     // Keep SSH host in sync with selected VM's IP (including when it appears after boot).
     useEffect(() => { setSshHost(vm.ipAddress || ''); }, [vm.ref, vm.ipAddress]);
+
+    useEffect(() => {
+        if (!keys.length) {
+            setKeyLabel('');
+            return;
+        }
+        if (!keyLabel || !keys.some(k => k.label === keyLabel)) {
+            setKeyLabel(keys[0].label);
+        }
+    }, [keys, keyLabel]);
 
     const [upLocal, setUpLocal] = useState('');
     const [upGuest, setUpGuest] = useState('');
@@ -36,6 +48,8 @@ export default function FileTransferTab({ vm, onJobStarted }: Props) {
     const [dlErr,   setDlErr]   = useState('');
 
     const toolsOk = vm.toolsStatus === 'toolsOk' || vm.toolsStatus === 'toolsOld';
+    const selectedKey = keys.find(k => k.label === keyLabel);
+    const sshUser = selectedKey?.defaultUser?.trim() || '';
 
     async function pickUploadFile() {
         const path = await OpenFileDialog('Select file to upload');
@@ -53,11 +67,11 @@ export default function FileTransferTab({ vm, onJobStarted }: Props) {
         try {
             let id: string;
             if (mode === 'ssh') {
-                id = await SSHUpload({ host: sshHost, port: sshPort, username, password, localPath: upLocal, guestPath: upGuest });
+                id = await SSHUpload({ host: sshHost, keyLabel, localPath: upLocal, guestPath: upGuest });
             } else {
                 id = await Upload({ vmRef: vm.ref, username, password, localPath: upLocal, guestPath: upGuest, guestOS: vm.guestOS });
             }
-            onJobStarted(id);
+            onJobStarted(id, vm.name || vm.ref);
         } catch (e: any) {
             setUpErr(String(e));
         } finally {
@@ -70,11 +84,11 @@ export default function FileTransferTab({ vm, onJobStarted }: Props) {
         try {
             let id: string;
             if (mode === 'ssh') {
-                id = await SSHDownload({ host: sshHost, port: sshPort, username, password, guestPath: dlGuest, localPath: dlLocal });
+                id = await SSHDownload({ host: sshHost, keyLabel, guestPath: dlGuest, localPath: dlLocal });
             } else {
                 id = await Download({ vmRef: vm.ref, username, password, guestPath: dlGuest, localPath: dlLocal });
             }
-            onJobStarted(id);
+            onJobStarted(id, vm.name || vm.ref);
         } catch (e: any) {
             setDlErr(String(e));
         } finally {
@@ -82,11 +96,11 @@ export default function FileTransferTab({ vm, onJobStarted }: Props) {
         }
     }
 
-    const sshReady = !!sshHost && sshPort > 0 && !!username;
+    const sshReady = !!sshHost.trim() && !!keyLabel && !!sshUser;
 
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-            <div className="form-section" style={{ padding: '1rem 1.25rem', flexShrink: 0, alignSelf: 'center', width: '420px' }}>
+        <div className="tab-body tab-body--fill tab-body--centered">
+            <div className="form-section tab-stack" style={{ flexShrink: 0 }}>
                 <div className="mode-toggle" style={{ alignSelf: 'center' }}>
                     <button className={`mode-btn ${mode === 'vmware' ? 'mode-btn--active' : ''}`}
                         onClick={() => setMode('vmware')}>VMware</button>
@@ -94,33 +108,59 @@ export default function FileTransferTab({ vm, onJobStarted }: Props) {
                         onClick={() => setMode('ssh')}>SSH / SFTP</button>
                 </div>
 
-                <div className="cred-row">
-                    <div className="field field--inline">
-                        <label>Username</label>
-                        <input value={username} onChange={e => setUsername(e.target.value)}
-                            placeholder="root" autoComplete="off" />
-                    </div>
-                    <div className="field field--inline">
-                        <label>Password</label>
-                        <input type="password" value={password} onChange={e => setPassword(e.target.value)}
-                            autoComplete="off" />
-                    </div>
-                </div>
-
-                {mode === 'ssh' && (
+                {mode === 'vmware' ? (
                     <div className="cred-row">
                         <div className="field field--inline">
-                            <label>Host</label>
-                            <input value={sshHost} onChange={e => setSshHost(e.target.value)}
-                                placeholder="192.168.1.100" autoComplete="off" />
+                            <label>Username</label>
+                            <input value={username} onChange={e => setUsername(e.target.value)}
+                                placeholder="root" autoComplete="off" />
                         </div>
-                        <div className="field field--inline field--narrow">
-                            <label>Port</label>
-                            <input type="number" value={sshPort}
-                                onChange={e => setSshPort(parseInt(e.target.value) || 22)}
-                                min={1} max={65535} />
+                        <div className="field field--inline">
+                            <label>Password</label>
+                            <input type="password" value={password} onChange={e => setPassword(e.target.value)}
+                                autoComplete="off" />
                         </div>
                     </div>
+                ) : (
+                    <>
+                        {keysError && <p className="form-error">{keysError}</p>}
+                        {!keysError && keys.length === 0 && (
+                            <div className="notice notice--warn">
+                                No SSH keys found. Create one in SSH Keys first.
+                            </div>
+                        )}
+
+                        <div className="cred-row">
+                            <div className="field field--inline">
+                                <label>Host</label>
+                                <input value={sshHost} onChange={e => setSshHost(e.target.value)}
+                                    placeholder="192.168.1.100" autoComplete="off" />
+                            </div>
+                            <div className="field field--inline">
+                                <label>Key</label>
+                                <select value={keyLabel} onChange={e => setKeyLabel(e.target.value)} disabled={!keys.length}>
+                                    {keys.map(k => (
+                                        <option key={k.label} value={k.label}>
+                                            {k.label} ({k.algorithm})
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                        </div>
+
+                        <div className="cred-row">
+                            <div className="field field--inline">
+                                <label>User</label>
+                                <input value={sshUser} readOnly placeholder="Set a default user on the selected key" />
+                            </div>
+                        </div>
+
+                        {selectedKey && !sshUser && (
+                            <div className="notice notice--warn">
+                                The selected key has no default user. Set one in SSH Keys or choose a different key.
+                            </div>
+                        )}
+                    </>
                 )}
 
                 {mode === 'vmware' && !toolsOk && (
@@ -130,7 +170,7 @@ export default function FileTransferTab({ vm, onJobStarted }: Props) {
                 )}
             </div>
 
-            <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+            <div className="tab-split-panels">
                 {/* Upload */}
                 <div className="transfer-panel">
                     <h3 className="transfer-title">Upload to guest</h3>

@@ -6,7 +6,35 @@ interface Props {
     loading: boolean;
     error: string;
     onSelect: (vm: manager.VMInfo) => void;
-    onRefresh: () => void;
+    onRefresh: () => Promise<void>;
+}
+
+function formatPowerState(state: string): string {
+    switch (state) {
+        case 'poweredOn':
+            return 'Powered On';
+        case 'poweredOff':
+            return 'Powered Off';
+        case 'suspended':
+            return 'Suspended';
+        default:
+            return state || 'Unknown';
+    }
+}
+
+function formatToolsStatus(state: string): string {
+    switch (state) {
+        case 'toolsOk':
+            return 'Tools ready';
+        case 'toolsOld':
+            return 'Tools outdated';
+        case 'toolsNotRunning':
+            return 'Tools not running';
+        case 'toolsNotInstalled':
+            return 'Tools not installed';
+        default:
+            return state || 'Tools unknown';
+    }
 }
 
 function PowerDot({ state }: { state: string }) {
@@ -26,7 +54,7 @@ export default function VMBrowser({ vms, selected, loading, error, onSelect, onR
         <div className="vm-browser">
             <div className="vm-browser-header">
                 <span className="vm-browser-title">Virtual Machines</span>
-                <button className="icon-btn" onClick={onRefresh} title="Refresh" disabled={loading}>
+                <button className="icon-btn" onClick={() => void onRefresh()} title="Refresh" disabled={loading}>
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <polyline points="23 4 23 10 17 10"/>
                         <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
@@ -54,9 +82,22 @@ export default function VMBrowser({ vms, selected, loading, error, onSelect, onR
                             onClick={() => onSelect(vm)}
                         >
                             <PowerDot state={vm.powerState} />
-                            <span className={`vm-name ${!toolsOk ? 'vm-name--no-tools' : ''}`} title={vm.name}>
-                                {vm.name}
-                            </span>
+                            <div className="vm-item-body">
+                                <span className={`vm-name ${!toolsOk ? 'vm-name--no-tools' : ''}`} title={vm.name}>
+                                    {vm.name}
+                                </span>
+                                <div className="vm-item-meta">
+                                    <span className={`vm-state-chip vm-state-chip--${vm.powerState}`}>
+                                        {formatPowerState(vm.powerState)}
+                                    </span>
+                                    <span
+                                        className={`vm-meta-text ${!vm.ipAddress && !toolsOk ? 'vm-meta-text--warn' : ''}`}
+                                        title={vm.ipAddress || formatToolsStatus(vm.toolsStatus)}
+                                    >
+                                        {vm.ipAddress || formatToolsStatus(vm.toolsStatus)}
+                                    </span>
+                                </div>
+                            </div>
                         </li>
                     );
                 })}

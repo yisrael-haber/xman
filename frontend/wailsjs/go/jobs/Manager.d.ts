@@ -20,3 +20,5 @@ export function List():Promise<Array<jobs.Job>>;
 export function SetContext(arg1:context.Context):Promise<void>;
 
 export function Submit(arg1:string,arg2:string,arg3:any):Promise<string>;
+
+export function SubmitWithParent(arg1:context.Context,arg2:string,arg3:string,arg4:any):Promise<string>;

@@ -6,6 +6,10 @@ export function ConnectionInfo() {
   return window['go']['manager']['Manager']['ConnectionInfo']();
 }
 
+export function DeploySSHKey(arg1) {
+  return window['go']['manager']['Manager']['DeploySSHKey'](arg1);
+}
+
 export function Disconnect(arg1) {
   return window['go']['manager']['Manager']['Disconnect'](arg1);
 }
@@ -34,6 +38,10 @@ export function InventoryNetworks() {
   return window['go']['manager']['Manager']['InventoryNetworks']();
 }
 
+export function ReplaceBackend(arg1, arg2) {
+  return window['go']['manager']['Manager']['ReplaceBackend'](arg1, arg2);
+}
+
 export function SSHDownload(arg1) {
   return window['go']['manager']['Manager']['SSHDownload'](arg1);
 }
@@ -48,10 +56,6 @@ export function SSHRun(arg1) {
 
 export function SSHUpload(arg1) {
   return window['go']['manager']['Manager']['SSHUpload'](arg1);
-}
-
-export function SetBackend(arg1) {
-  return window['go']['manager']['Manager']['SetBackend'](arg1);
 }
 
 export function SetContext(arg1) {
@@ -76,6 +80,10 @@ export function SnapshotRevert(arg1) {
 
 export function Upload(arg1) {
   return window['go']['manager']['Manager']['Upload'](arg1);
+}
+
+export function VMGet(arg1) {
+  return window['go']['manager']['Manager']['VMGet'](arg1);
 }
 
 export function VMInstallTools(arg1) {

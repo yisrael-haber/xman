@@ -6,6 +6,7 @@ import JobsBar from './JobsBar';
 import VMPanel from './features/vms/VMPanel';
 import InventoryPanel from './features/inventory/InventoryPanel';
 import NetworksPanel from './features/networks/NetworksPanel';
+import SSHKeysPanel from './features/sshkeys/SSHKeysPanel';
 import { useJobs } from '../hooks/useJobs';
 
 interface Props {
@@ -15,7 +16,7 @@ interface Props {
 
 export default function MainView({ info, onDisconnect }: Props) {
     const [activeFeature, setActiveFeature] = useState<FeatureID>('vms');
-    const { jobs, trackJob, dismiss } = useJobs();
+    const { jobs, trackJob, dismiss, cancel } = useJobs();
 
     async function handleDisconnect() {
         await Disconnect();
@@ -27,7 +28,10 @@ export default function MainView({ info, onDisconnect }: Props) {
             <header className="main-header">
                 <span className="main-header-title">xman</span>
                 <div className="main-header-right">
-                    <span className="connected-host">⬤ {info.displayName}</span>
+                    <span className="connected-host">
+                        <span className="connected-host-dot" />
+                        <span className="connected-host-label">{info.displayName}</span>
+                    </span>
                     <button className="disconnect-btn" onClick={handleDisconnect}>Disconnect</button>
                 </div>
             </header>
@@ -42,13 +46,16 @@ export default function MainView({ info, onDisconnect }: Props) {
                     {activeFeature === 'networks' && (
                         <NetworksPanel />
                     )}
+                    {activeFeature === 'sshkeys' && (
+                        <SSHKeysPanel />
+                    )}
                     {activeFeature === 'inventory' && info.inventory && (
                         <InventoryPanel />
                     )}
                 </div>
             </div>
 
-            <JobsBar jobs={jobs} onDismiss={dismiss} />
+            <JobsBar jobs={jobs} onDismiss={dismiss} onCancel={cancel} />
         </div>
     );
 }

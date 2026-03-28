@@ -2,6 +2,8 @@ package manager
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	"xman/internal/jobs"
 )
@@ -26,30 +28,78 @@ func (m *Manager) VMList() ([]VMInfo, error) {
 	return b.ListVMs(m.ctx)
 }
 
+func (m *Manager) VMGet(vmRef string) (VMInfo, error) {
+	b, err := m.getBackend()
+	if err != nil {
+		return VMInfo{}, err
+	}
+	return b.GetVM(m.ctx, vmRef)
+}
+
+func waitForPowerState(ctx context.Context, b Backend, emit jobs.EmitFn, vmRef, desiredState, action string) error {
+	deadline := time.NewTimer(45 * time.Second)
+	ticker := time.NewTicker(750 * time.Millisecond)
+	defer deadline.Stop()
+	defer ticker.Stop()
+
+	for {
+		vms, err := b.ListVMs(ctx)
+		if err != nil {
+			return fmt.Errorf("verifying power state: %w", err)
+		}
+
+		for _, vm := range vms {
+			if vm.Ref != vmRef {
+				continue
+			}
+			if vm.PowerState == desiredState {
+				emit(100, fmt.Sprintf("%s complete", action))
+				return nil
+			}
+			emit(70, fmt.Sprintf("Waiting for VM to report %s (current: %s)...", desiredState, vm.PowerState))
+			break
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return fmt.Errorf("%s started, but the VM did not report %s within 45 seconds", action, desiredState)
+		case <-ticker.C:
+		}
+	}
+}
+
 func (m *Manager) VMPowerOn(vmRef string) string {
-	return m.jobs.Submit("power", "Power On", func(ctx context.Context, emit jobs.EmitFn) error {
+	return m.submitJob("power", "Power On", func(ctx context.Context, emit jobs.EmitFn) error {
 		b, err := m.getBackend()
 		if err != nil {
 			return err
 		}
 		emit(10, "Powering on...")
-		return b.PowerOn(ctx, vmRef)
+		if err := b.PowerOn(ctx, vmRef); err != nil {
+			return err
+		}
+		return waitForPowerState(ctx, b, emit, vmRef, "poweredOn", "Power on")
 	})
 }
 
 func (m *Manager) VMPowerOff(vmRef string) string {
-	return m.jobs.Submit("power", "Power Off", func(ctx context.Context, emit jobs.EmitFn) error {
+	return m.submitJob("power", "Power Off", func(ctx context.Context, emit jobs.EmitFn) error {
 		b, err := m.getBackend()
 		if err != nil {
 			return err
 		}
 		emit(10, "Powering off...")
-		return b.PowerOff(ctx, vmRef)
+		if err := b.PowerOff(ctx, vmRef); err != nil {
+			return err
+		}
+		return waitForPowerState(ctx, b, emit, vmRef, "poweredOff", "Power off")
 	})
 }
 
 func (m *Manager) VMReset(vmRef string) string {
-	return m.jobs.Submit("power", "Reset", func(ctx context.Context, emit jobs.EmitFn) error {
+	return m.submitJob("power", "Reset", func(ctx context.Context, emit jobs.EmitFn) error {
 		b, err := m.getBackend()
 		if err != nil {
 			return err
@@ -60,12 +110,15 @@ func (m *Manager) VMReset(vmRef string) string {
 }
 
 func (m *Manager) VMSuspend(vmRef string) string {
-	return m.jobs.Submit("power", "Suspend", func(ctx context.Context, emit jobs.EmitFn) error {
+	return m.submitJob("power", "Suspend", func(ctx context.Context, emit jobs.EmitFn) error {
 		b, err := m.getBackend()
 		if err != nil {
 			return err
 		}
 		emit(10, "Suspending...")
-		return b.Suspend(ctx, vmRef)
+		if err := b.Suspend(ctx, vmRef); err != nil {
+			return err
+		}
+		return waitForPowerState(ctx, b, emit, vmRef, "suspended", "Suspend")
 	})
 }

@@ -14,16 +14,24 @@ export function ConnectionInfo() {
   return window['go']['main']['App']['ConnectionInfo']();
 }
 
+export function CreateSSHKey(arg1, arg2, arg3) {
+  return window['go']['main']['App']['CreateSSHKey'](arg1, arg2, arg3);
+}
+
+export function DeleteSSHKey(arg1) {
+  return window['go']['main']['App']['DeleteSSHKey'](arg1);
+}
+
 export function Disconnect() {
   return window['go']['main']['App']['Disconnect']();
 }
 
-export function LoadConnectionSettings() {
-  return window['go']['main']['App']['LoadConnectionSettings']();
+export function ListSSHKeys() {
+  return window['go']['main']['App']['ListSSHKeys']();
 }
 
-export function LoadCredential(arg1) {
-  return window['go']['main']['App']['LoadCredential'](arg1);
+export function LoadConnectionSettings() {
+  return window['go']['main']['App']['LoadConnectionSettings']();
 }
 
 export function OpenDirectoryDialog(arg1) {
@@ -36,10 +44,6 @@ export function OpenFileDialog(arg1) {
 
 export function SaveConnectionSettings(arg1) {
   return window['go']['main']['App']['SaveConnectionSettings'](arg1);
-}
-
-export function SaveCredential(arg1, arg2) {
-  return window['go']['main']['App']['SaveCredential'](arg1, arg2);
 }
 
 export function SaveFileDialog(arg1, arg2) {

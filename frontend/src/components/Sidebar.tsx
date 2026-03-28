@@ -1,4 +1,4 @@
-export type FeatureID = 'vms' | 'inventory' | 'networks';
+export type FeatureID = 'vms' | 'inventory' | 'networks' | 'sshkeys';
 
 interface NavItem {
     id: FeatureID;
@@ -38,9 +38,19 @@ const NetworksIcon = () => (
     </svg>
 );
 
+const SSHKeysIcon = () => (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="7.5" cy="15.5" r="4.5"/>
+        <path d="M21 8.5l-5 5"/>
+        <path d="M15 8.5l2 2"/>
+        <path d="M12 11.5l5-5"/>
+    </svg>
+);
+
 const NAV_ITEMS: NavItem[] = [
     { id: 'vms',       label: 'Virtual Machines',   icon: <VMsIcon /> },
     { id: 'networks',  label: 'Networks',            icon: <NetworksIcon /> },
+    { id: 'sshkeys',   label: 'SSH Keys',            icon: <SSHKeysIcon /> },
     { id: 'inventory', label: 'Hosts & Datastores', icon: <InventoryIcon /> },
 ];
 

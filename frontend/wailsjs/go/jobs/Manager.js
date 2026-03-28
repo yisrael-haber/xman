@@ -37,3 +37,7 @@ export function SetContext(arg1) {
 export function Submit(arg1, arg2, arg3) {
   return window['go']['jobs']['Manager']['Submit'](arg1, arg2, arg3);
 }
+
+export function SubmitWithParent(arg1, arg2, arg3, arg4) {
+  return window['go']['jobs']['Manager']['SubmitWithParent'](arg1, arg2, arg3, arg4);
+}

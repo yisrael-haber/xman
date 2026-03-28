@@ -1,75 +1,125 @@
 import { useState, useRef, useEffect } from 'react';
 import { manager } from '../../../../wailsjs/go/models';
 import { GuestRun, SSHRun } from '../../../../wailsjs/go/manager/Manager';
-import { EventsOn, EventsOff } from '../../../../wailsjs/runtime/runtime';
+import { JobCancel } from '../../../../wailsjs/go/jobs/Manager';
+import { ClipboardSetText, EventsOn } from '../../../../wailsjs/runtime/runtime';
+import useSSHKeys from '../../../hooks/useSSHKeys';
 
 type Mode = 'vmware' | 'ssh';
 
 interface Props {
     vm: manager.VMInfo;
-    onJobStarted: (id: string) => void;
+    onJobStarted: (id: string, targetName?: string) => void;
 }
 
 interface OutputEntry {
     command: string;
     output: string;
-    status: 'running' | 'done' | 'failed';
+    status: 'running' | 'done' | 'failed' | 'cancelled';
+}
+
+function extractCommandOutput(job: any): string {
+    const log = Array.isArray(job?.log) ? job.log : [];
+    for (let i = log.length - 1; i >= 0; i -= 1) {
+        const entry = log[i];
+        if (entry?.progress === 95 && typeof entry.message === 'string' && entry.message.trim()) {
+            return entry.message;
+        }
+    }
+
+    if (job?.status === 'cancelled') {
+        return 'Command cancelled.';
+    }
+
+    if (typeof job?.error === 'string' && job.error.trim()) {
+        return job.error;
+    }
+
+    if (typeof job?.message === 'string' && job.message.trim()) {
+        return job.message;
+    }
+
+    return '(no output)';
 }
 
 export default function GuestExecTab({ vm, onJobStarted }: Props) {
-    const [mode,     setMode]     = useState<Mode>('vmware');
-    const [username, setUsername] = useState('');
-    const [password, setPassword] = useState('');
-    const [sshHost,  setSshHost]  = useState(vm.ipAddress || '');
-    const [sshPort,  setSshPort]  = useState(22);
-    const [command,  setCommand]  = useState('');
-    const [history,  setHistory]  = useState<OutputEntry[]>([]);
-    const [busy,     setBusy]     = useState(false);
-    const [error,    setError]    = useState('');
+    const [mode,      setMode]      = useState<Mode>('vmware');
+    const [username,  setUsername]  = useState('');
+    const [password,  setPassword]  = useState('');
+    const [sshHost,   setSshHost]   = useState(vm.ipAddress || '');
+    const [keyLabel,  setKeyLabel]  = useState('');
+    const [command,   setCommand]   = useState('');
+    const [result,    setResult]    = useState<OutputEntry | null>(null);
+    const [busy,      setBusy]      = useState(false);
+    const [error,     setError]     = useState('');
+    const [copied,    setCopied]    = useState(false);
+    const [activeJobId, setActiveJobId] = useState('');
     const outputRef = useRef<HTMLDivElement>(null);
+    const { keys, error: keysError } = useSSHKeys();
 
     // Keep SSH host in sync with the selected VM's IP (including when it appears after boot).
     useEffect(() => { setSshHost(vm.ipAddress || ''); }, [vm.ref, vm.ipAddress]);
 
     useEffect(() => {
-        if (outputRef.current) {
-            outputRef.current.scrollTop = outputRef.current.scrollHeight;
+        if (!keys.length) {
+            setKeyLabel('');
+            return;
         }
-    }, [history]);
+        if (!keyLabel || !keys.some(k => k.label === keyLabel)) {
+            setKeyLabel(keys[0].label);
+        }
+    }, [keys, keyLabel]);
+
+    useEffect(() => {
+        if (outputRef.current) {
+            outputRef.current.scrollTop = 0;
+        }
+        setCopied(false);
+    }, [result]);
+
+    useEffect(() => {
+        setResult(null);
+        setCommand('');
+        setError('');
+        setCopied(false);
+        setActiveJobId('');
+    }, [vm.ref]);
 
     const toolsOk = vm.toolsStatus === 'toolsOk' || vm.toolsStatus === 'toolsOld';
+    const selectedKey = keys.find(k => k.label === keyLabel);
+    const sshUser = selectedKey?.defaultUser?.trim() || '';
 
     async function handleRun() {
         if (!command.trim()) return;
         setError('');
         setBusy(true);
         const cmd = command.trim();
-        const idx = history.length;
-        const entry: OutputEntry = { command: cmd, output: '', status: 'running' };
-        setHistory(prev => [...prev, entry]);
+        setResult({ command: cmd, output: '', status: 'running' });
 
         try {
             let id: string;
             if (mode === 'ssh') {
-                id = await SSHRun({ host: sshHost, port: sshPort, username, password, command: cmd });
+                id = await SSHRun({ host: sshHost, keyLabel, command: cmd });
             } else {
                 id = await GuestRun({ vmRef: vm.ref, username, password, command: cmd, guestOS: vm.guestOS });
             }
-            onJobStarted(id);
+            setActiveJobId(id);
+            onJobStarted(id, vm.name || vm.ref);
 
             const unsub = EventsOn(`job:${id}`, (job: any) => {
                 if (job.status === 'done') {
-                    setHistory(prev => prev.map((e, i) =>
-                        i === idx ? { ...e, output: job.message, status: 'done' } : e
-                    ));
-                    EventsOff(`job:${id}`);
+                    setResult({ command: cmd, output: extractCommandOutput(job), status: 'done' });
+                    setActiveJobId('');
                     unsub();
                     setBusy(false);
                 } else if (job.status === 'failed') {
-                    setHistory(prev => prev.map((e, i) =>
-                        i === idx ? { ...e, output: job.error || 'Command failed', status: 'failed' } : e
-                    ));
-                    EventsOff(`job:${id}`);
+                    setResult({ command: cmd, output: extractCommandOutput(job), status: 'failed' });
+                    setActiveJobId('');
+                    unsub();
+                    setBusy(false);
+                } else if (job.status === 'cancelled') {
+                    setResult({ command: cmd, output: extractCommandOutput(job), status: 'cancelled' });
+                    setActiveJobId('');
                     unsub();
                     setBusy(false);
                 }
@@ -78,9 +128,33 @@ export default function GuestExecTab({ vm, onJobStarted }: Props) {
             setCommand('');
         } catch (e: any) {
             setError(String(e));
-            setHistory(prev => prev.slice(0, -1));
+            setResult(null);
+            setActiveJobId('');
             setBusy(false);
         }
+    }
+
+    async function handleCopy() {
+        if (!result || !result.output) return;
+        try {
+            await ClipboardSetText(result.output);
+            setCopied(true);
+            window.setTimeout(() => setCopied(false), 2000);
+        } catch {
+            try {
+                await navigator.clipboard.writeText(result.output);
+                setCopied(true);
+                window.setTimeout(() => setCopied(false), 2000);
+            } catch (e: any) {
+                setError(String(e));
+            }
+        }
+    }
+
+    function handleCancel() {
+        if (!activeJobId) return;
+        setError('');
+        void JobCancel(activeJobId);
     }
 
     function handleKeyDown(e: React.KeyboardEvent) {
@@ -91,17 +165,22 @@ export default function GuestExecTab({ vm, onJobStarted }: Props) {
     }
 
     const notReady = mode === 'vmware' && !toolsOk;
-    const canRun   = !busy && !!command.trim() && !!username &&
-                     (mode === 'vmware' || (!!sshHost && sshPort > 0));
+    const sshReady = !!sshHost.trim() && !!keyLabel && !!sshUser;
+    const canRun   = !busy && !!command.trim() &&
+                     (mode === 'vmware' ? !!username : sshReady);
 
     return (
-        <div className="tab-body" style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-            <div className="form-section" style={{ alignSelf: 'center', width: '420px' }}>
+        <div className="tab-body tab-body--fill tab-body--centered">
+            <div className="form-section exec-credentials">
                 <div className="mode-toggle" style={{ alignSelf: 'center' }}>
                     <button className={`mode-btn ${mode === 'vmware' ? 'mode-btn--active' : ''}`}
                         onClick={() => setMode('vmware')}>VMware</button>
                     <button className={`mode-btn ${mode === 'ssh' ? 'mode-btn--active' : ''}`}
                         onClick={() => setMode('ssh')}>SSH</button>
+                </div>
+
+                <div className="exec-session-note">
+                    Each command runs in a fresh shell session. Output below replaces the previous run.
                 </div>
 
                 {mode === 'vmware' && !toolsOk && (
@@ -110,72 +189,118 @@ export default function GuestExecTab({ vm, onJobStarted }: Props) {
                     </div>
                 )}
 
-                <div className="cred-row">
-                    <div className="field field--inline">
-                        <label>Username</label>
-                        <input value={username} onChange={e => setUsername(e.target.value)}
-                            placeholder="root" autoComplete="off" />
-                    </div>
-                    <div className="field field--inline">
-                        <label>Password</label>
-                        <input type="password" value={password} onChange={e => setPassword(e.target.value)}
-                            autoComplete="off" />
-                    </div>
-                </div>
-
-                {mode === 'ssh' && (
+                {mode === 'vmware' ? (
                     <div className="cred-row">
                         <div className="field field--inline">
-                            <label>Host</label>
-                            <input value={sshHost} onChange={e => setSshHost(e.target.value)}
-                                placeholder="192.168.1.100" autoComplete="off" />
+                            <label>Username</label>
+                            <input value={username} onChange={e => setUsername(e.target.value)}
+                                placeholder="root" autoComplete="off" />
                         </div>
-                        <div className="field field--inline field--narrow">
-                            <label>Port</label>
-                            <input type="number" value={sshPort}
-                                onChange={e => setSshPort(parseInt(e.target.value) || 22)}
-                                min={1} max={65535} />
+                        <div className="field field--inline">
+                            <label>Password</label>
+                            <input type="password" value={password} onChange={e => setPassword(e.target.value)}
+                                autoComplete="off" />
                         </div>
                     </div>
+                ) : (
+                    <>
+                        {keysError && <p className="form-error">{keysError}</p>}
+                        {!keysError && keys.length === 0 && (
+                            <div className="notice notice--warn">
+                                No SSH keys found. Create one in SSH Keys first.
+                            </div>
+                        )}
+
+                        <div className="cred-row">
+                            <div className="field field--inline">
+                                <label>Host</label>
+                                <input value={sshHost} onChange={e => setSshHost(e.target.value)}
+                                    placeholder="192.168.1.100" autoComplete="off" />
+                            </div>
+                            <div className="field field--inline">
+                                <label>Key</label>
+                                <select value={keyLabel} onChange={e => setKeyLabel(e.target.value)} disabled={!keys.length}>
+                                    {keys.map(k => (
+                                        <option key={k.label} value={k.label}>
+                                            {k.label} ({k.algorithm})
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                        </div>
+
+                        <div className="cred-row">
+                            <div className="field field--inline">
+                                <label>User</label>
+                                <input value={sshUser} readOnly placeholder="Set a default user on the selected key" />
+                            </div>
+                        </div>
+
+                        {selectedKey && !sshUser && (
+                            <div className="notice notice--warn">
+                                The selected key has no default user. Set one in SSH Keys or choose a different key.
+                            </div>
+                        )}
+                    </>
                 )}
             </div>
 
-            <div className="exec-output" ref={outputRef}>
-                {history.length === 0 && (
-                    <span className="exec-output-empty">Run a command to see output here.</span>
-                )}
-                {history.map((entry, i) => (
-                    <div key={i} className="exec-entry">
-                        <div className="exec-prompt">$ {entry.command}</div>
-                        {entry.status === 'running' && (
-                            <div className="exec-output-text exec-output-running">Running…</div>
-                        )}
-                        {entry.status !== 'running' && (
-                            <pre className={`exec-output-text ${entry.status === 'failed' ? 'exec-output-error' : ''}`}>
-                                {entry.output}
-                            </pre>
-                        )}
+            <div className="exec-workspace">
+                <div className="exec-shell-header">
+                    <div className="exec-shell-meta">
+                        <span className="exec-shell-title">Command Output</span>
+                        {result?.command && <span className="exec-shell-command">$ {result.command}</span>}
                     </div>
-                ))}
+                    <button
+                        className="btn-secondary"
+                        onClick={() => void handleCopy()}
+                        disabled={!result?.output || result?.status === 'running'}
+                    >
+                        {copied ? 'Copied!' : 'Copy Output'}
+                    </button>
+                </div>
+
+                <div className="exec-output" ref={outputRef}>
+                    {!result && (
+                        <span className="exec-output-empty">Run a command to see output here.</span>
+                    )}
+                    {result?.status === 'running' && (
+                        <div className="exec-entry">
+                            <div className="exec-output-text exec-output-running">Running…</div>
+                        </div>
+                    )}
+                    {result && result.status !== 'running' && (
+                        <div className="exec-entry">
+                            <pre className={`exec-output-text ${result.status === 'failed' ? 'exec-output-error' : result.status === 'cancelled' ? 'exec-output-cancelled' : ''}`}>
+                                {result.output || '(no output)'}
+                            </pre>
+                        </div>
+                    )}
+                </div>
+
+                <div className="exec-input-row">
+                    <span className="exec-prompt-sym">$</span>
+                    <input
+                        className="exec-input"
+                        value={command}
+                        onChange={e => setCommand(e.target.value)}
+                        onKeyDown={handleKeyDown}
+                        placeholder="command to run in guest"
+                        disabled={busy || notReady || (mode === 'vmware' ? !username : !sshReady)}
+                        autoComplete="off"
+                    />
+                    <button className="btn-primary" onClick={handleRun} disabled={!canRun || notReady}>
+                        {busy ? 'Running…' : 'Run'}
+                    </button>
+                    {busy && activeJobId && (
+                        <button className="btn-secondary" onClick={handleCancel}>
+                            Cancel
+                        </button>
+                    )}
+                </div>
             </div>
 
             {error && <p className="form-error">{error}</p>}
-
-            <div className="exec-input-row">
-                <span className="exec-prompt-sym">$</span>
-                <input
-                    className="exec-input"
-                    value={command}
-                    onChange={e => setCommand(e.target.value)}
-                    onKeyDown={handleKeyDown}
-                    placeholder="command to run in guest"
-                    disabled={busy || notReady || !username}
-                    autoComplete="off"
-                />
-                <button className="btn-primary" onClick={handleRun} disabled={!canRun || notReady}>
-                    {busy ? 'Running…' : 'Run'}
-                </button>
-            </div>
         </div>
     );
 }
