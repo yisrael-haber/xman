@@ -5,6 +5,7 @@ import { JobCancel } from '../../../../wailsjs/go/jobs/Manager';
 import { LaunchInteractiveSSHSession } from '../../../../wailsjs/go/main/App';
 import { ClipboardSetText, EventsOn } from '../../../../wailsjs/runtime/runtime';
 import useSSHKeys from '../../../hooks/useSSHKeys';
+import useGuestCredentials from '../../../hooks/useGuestCredentials';
 
 type Mode = 'vmware' | 'ssh';
 
@@ -45,8 +46,7 @@ function extractCommandOutput(job: any): string {
 
 export default function GuestExecTab({ vm, onJobStarted }: Props) {
     const [mode,      setMode]      = useState<Mode>('vmware');
-    const [username,  setUsername]  = useState('');
-    const [password,  setPassword]  = useState('');
+    const [credentialLabel, setCredentialLabel] = useState('');
     const [sshHost,   setSshHost]   = useState(vm.ipAddress || '');
     const [keyLabel,  setKeyLabel]  = useState('');
     const [command,   setCommand]   = useState('');
@@ -58,6 +58,7 @@ export default function GuestExecTab({ vm, onJobStarted }: Props) {
     const [launchingSession, setLaunchingSession] = useState(false);
     const outputRef = useRef<HTMLDivElement>(null);
     const { keys, error: keysError } = useSSHKeys();
+    const { credentials, error: credentialsError } = useGuestCredentials();
 
     // Keep SSH host in sync with the selected VM's IP (including when it appears after boot).
     useEffect(() => { setSshHost(vm.ipAddress || ''); }, [vm.ref, vm.ipAddress]);
@@ -71,6 +72,16 @@ export default function GuestExecTab({ vm, onJobStarted }: Props) {
             setKeyLabel(keys[0].label);
         }
     }, [keys, keyLabel]);
+
+    useEffect(() => {
+        if (!credentials.length) {
+            setCredentialLabel('');
+            return;
+        }
+        if (!credentialLabel || !credentials.some(c => c.label === credentialLabel)) {
+            setCredentialLabel(credentials[0].label);
+        }
+    }, [credentials, credentialLabel]);
 
     useEffect(() => {
         if (outputRef.current) {
@@ -88,9 +99,11 @@ export default function GuestExecTab({ vm, onJobStarted }: Props) {
         setLaunchingSession(false);
     }, [vm.ref]);
 
-    const toolsOk = vm.toolsStatus === 'toolsOk' || vm.toolsStatus === 'toolsOld';
     const selectedKey = keys.find(k => k.label === keyLabel);
+    const selectedCredential = credentials.find(c => c.label === credentialLabel);
     const sshUser = selectedKey?.defaultUser?.trim() || '';
+    const guestOpsReady = vm.powerState === 'poweredOn';
+    const toolsReady = vm.toolsStatus === 'toolsOk' || vm.toolsStatus === 'toolsOld';
 
     async function handleRun() {
         if (!command.trim()) return;
@@ -104,7 +117,7 @@ export default function GuestExecTab({ vm, onJobStarted }: Props) {
             if (mode === 'ssh') {
                 id = await SSHRun({ host: sshHost, keyLabel, command: cmd });
             } else {
-                id = await GuestRun({ vmRef: vm.ref, username, password, command: cmd, guestOS: vm.guestOS });
+                id = await GuestRun({ vmRef: vm.ref, credentialLabel, username: '', password: '', command: cmd, guestOS: vm.guestOS });
             }
             setActiveJobId(id);
             onJobStarted(id, vm.name || vm.ref);
@@ -180,10 +193,9 @@ export default function GuestExecTab({ vm, onJobStarted }: Props) {
         }
     }
 
-    const notReady = mode === 'vmware' && !toolsOk;
     const sshReady = !!sshHost.trim() && !!keyLabel && !!sshUser;
     const canRun   = !busy && !!command.trim() &&
-                     (mode === 'vmware' ? !!username : sshReady);
+                     (mode === 'vmware' ? (!!credentialLabel && guestOpsReady) : sshReady);
 
     return (
         <div className="tab-body tab-body--fill tab-body--centered">
@@ -195,25 +207,44 @@ export default function GuestExecTab({ vm, onJobStarted }: Props) {
                         onClick={() => setMode('ssh')}>SSH</button>
                 </div>
 
-                {mode === 'vmware' && !toolsOk && (
+                {mode === 'vmware' && !guestOpsReady && (
                     <div className="notice notice--warn">
-                        Guest operations require VMware Tools to be running. Switch to SSH or start Tools to run commands.
+                        Guest operations require the VM to be powered on.
+                    </div>
+                )}
+
+                {mode === 'vmware' && guestOpsReady && !toolsReady && (
+                    <div className="notice notice--warn">
+                        This VM is powered on, so guest operations can be attempted even though VMware Tools may not be ready yet. If the backend rejects the command, the error will appear here.
                     </div>
                 )}
 
                 {mode === 'vmware' ? (
-                    <div className="cred-row">
-                        <div className="field field--inline">
-                            <label>Username</label>
-                            <input value={username} onChange={e => setUsername(e.target.value)}
-                                placeholder="root" autoComplete="off" />
+                    <>
+                        {credentialsError && <p className="form-error">{credentialsError}</p>}
+                        {!credentialsError && credentials.length === 0 && (
+                            <div className="notice notice--warn">
+                                No guest credentials found. Create one in Guest Credentials first.
+                            </div>
+                        )}
+
+                        <div className="cred-row">
+                            <div className="field field--inline">
+                                <label>Credential</label>
+                                <select value={credentialLabel} onChange={e => setCredentialLabel(e.target.value)} disabled={!credentials.length}>
+                                    {credentials.map(credential => (
+                                        <option key={credential.label} value={credential.label}>
+                                            {credential.label} ({credential.username})
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                            <div className="field field--inline">
+                                <label>Username</label>
+                                <input value={selectedCredential?.username ?? ''} readOnly placeholder="Select a stored credential" />
+                            </div>
                         </div>
-                        <div className="field field--inline">
-                            <label>Password</label>
-                            <input type="password" value={password} onChange={e => setPassword(e.target.value)}
-                                autoComplete="off" />
-                        </div>
-                    </div>
+                    </>
                 ) : (
                     <>
                         {keysError && <p className="form-error">{keysError}</p>}
@@ -318,10 +349,10 @@ export default function GuestExecTab({ vm, onJobStarted }: Props) {
                         onChange={e => setCommand(e.target.value)}
                         onKeyDown={handleKeyDown}
                         placeholder="command to run in guest"
-                        disabled={busy || notReady || (mode === 'vmware' ? !username : !sshReady)}
+                        disabled={busy || (mode === 'vmware' ? (!credentialLabel || !guestOpsReady) : !sshReady)}
                         autoComplete="off"
                     />
-                    <button className="btn-primary" onClick={handleRun} disabled={!canRun || notReady}>
+                    <button className="btn-primary" onClick={handleRun} disabled={!canRun}>
                         {busy ? 'Running…' : 'Run'}
                     </button>
                     {busy && activeJobId && (

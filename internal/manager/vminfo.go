@@ -10,14 +10,16 @@ import (
 
 // VMInfo is a serialisable summary of a virtual machine.
 type VMInfo struct {
-	Ref         string `json:"ref"`
-	Name        string `json:"name"`
-	PowerState  string `json:"powerState"`
-	ToolsStatus string `json:"toolsStatus"`
-	GuestOS     string `json:"guestOS"`
-	IPAddress   string `json:"ipAddress"`
-	NumCPU      int32  `json:"numCPU"`
-	MemoryMB    int32  `json:"memoryMB"`
+	Ref          string   `json:"ref"`
+	Name         string   `json:"name"`
+	PathSegments []string `json:"pathSegments"`
+	DisplayPath  string   `json:"displayPath"`
+	PowerState   string   `json:"powerState"`
+	ToolsStatus  string   `json:"toolsStatus"`
+	GuestOS      string   `json:"guestOS"`
+	IPAddress    string   `json:"ipAddress"`
+	NumCPU       int32    `json:"numCPU"`
+	MemoryMB     int32    `json:"memoryMB"`
 }
 
 func (m *Manager) VMList() ([]VMInfo, error) {

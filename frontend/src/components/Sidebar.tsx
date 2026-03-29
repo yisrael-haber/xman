@@ -50,7 +50,7 @@ const SSHKeysIcon = () => (
 const NAV_ITEMS: NavItem[] = [
     { id: 'vms',       label: 'Virtual Machines',   icon: <VMsIcon /> },
     { id: 'networks',  label: 'Networks',            icon: <NetworksIcon /> },
-    { id: 'sshkeys',   label: 'SSH Keys',            icon: <SSHKeysIcon /> },
+    { id: 'sshkeys',   label: 'SSH Keys & Credentials', icon: <SSHKeysIcon /> },
     { id: 'inventory', label: 'Hosts & Datastores', icon: <InventoryIcon /> },
 ];
 

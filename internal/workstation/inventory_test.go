@@ -67,6 +67,84 @@ item2.path = "/tmp/linux-b/linux-b.vmx"
 	}
 }
 
+func TestParseInventoryVMsSupportsVmlistHierarchy(t *testing.T) {
+	tmpDir := t.TempDir()
+	inventoryPath := filepath.Join(tmpDir, "inventory.vmls")
+	content := `
+vmlist1.config = ""
+vmlist1.DisplayName = "Lab"
+vmlist1.ParentID = "0"
+vmlist1.ItemID = "1"
+vmlist2.config = ""
+vmlist2.DisplayName = "Windows"
+vmlist2.ParentID = "1"
+vmlist2.ItemID = "2"
+vmlist3.config = "C:\VMs\win\win.vmx"
+vmlist3.DisplayName = "win"
+vmlist3.ParentID = "2"
+vmlist3.ItemID = "3"
+vmlist3.SeqID = "1"
+vmlist4.config = "C:\VMs\linux\linux.vmx"
+vmlist4.DisplayName = "linux"
+vmlist4.ParentID = "1"
+vmlist4.ItemID = "4"
+vmlist4.SeqID = "0"
+vmlist5.config = ""
+`
+	if err := os.WriteFile(inventoryPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	got, err := parseInventoryVMs(inventoryPath)
+	if err != nil {
+		t.Fatalf("parseInventoryVMs() error = %v", err)
+	}
+
+	if len(got) != 2 {
+		t.Fatalf("parseInventoryVMs() len = %d, want %d (%v)", len(got), 2, got)
+	}
+
+	if got[0].Path != `C:\VMs\linux\linux.vmx` {
+		t.Fatalf("first inventory path = %q, want %q", got[0].Path, `C:\VMs\linux\linux.vmx`)
+	}
+	if got[0].DisplayName != "linux" {
+		t.Fatalf("first displayName = %q, want %q", got[0].DisplayName, "linux")
+	}
+	wantFirstSegments := []string{"Lab"}
+	if len(got[0].PathSegments) != len(wantFirstSegments) {
+		t.Fatalf("first pathSegments len = %d, want %d (%v)", len(got[0].PathSegments), len(wantFirstSegments), got[0].PathSegments)
+	}
+	for i := range wantFirstSegments {
+		if got[0].PathSegments[i] != wantFirstSegments[i] {
+			t.Fatalf("first pathSegments[%d] = %q, want %q", i, got[0].PathSegments[i], wantFirstSegments[i])
+		}
+	}
+
+	wantSecondSegments := []string{"Lab", "Windows"}
+	if len(got[1].PathSegments) != len(wantSecondSegments) {
+		t.Fatalf("second pathSegments len = %d, want %d (%v)", len(got[1].PathSegments), len(wantSecondSegments), got[1].PathSegments)
+	}
+	for i := range wantSecondSegments {
+		if got[1].PathSegments[i] != wantSecondSegments[i] {
+			t.Fatalf("second pathSegments[%d] = %q, want %q", i, got[1].PathSegments[i], wantSecondSegments[i])
+		}
+	}
+
+	paths, err := parseInventory(inventoryPath)
+	if err != nil {
+		t.Fatalf("parseInventory() error = %v", err)
+	}
+	wantPaths := []string{`C:\VMs\linux\linux.vmx`, `C:\VMs\win\win.vmx`}
+	if len(paths) != len(wantPaths) {
+		t.Fatalf("parseInventory() len = %d, want %d (%v)", len(paths), len(wantPaths), paths)
+	}
+	for i := range wantPaths {
+		if paths[i] != wantPaths[i] {
+			t.Fatalf("parseInventory()[%d] = %q, want %q", i, paths[i], wantPaths[i])
+		}
+	}
+}
+
 func TestParseVMXParsesFieldsAndDefaultsCPU(t *testing.T) {
 	tmpDir := t.TempDir()
 	vmxPath := filepath.Join(tmpDir, "sample.vmx")
@@ -130,6 +208,46 @@ func TestScanDirectoryFindsVMXOneLevelDeep(t *testing.T) {
 	assertContainsPath(t, got, otherTopLevelVMX)
 	if containsPath(got, deepVMX) {
 		t.Fatalf("scanDirectory() unexpectedly included deeply nested VMX %q", deepVMX)
+	}
+}
+
+func TestHierarchyForVMXUsesConfiguredRoot(t *testing.T) {
+	vmxPath := filepath.Join(string(filepath.Separator), "srv", "vms", "lab", "ubuntu", "ubuntu.vmx")
+
+	segments, displayPath := hierarchyForVMX(vmxPath, filepath.Join(string(filepath.Separator), "srv", "vms"))
+
+	want := []string{"lab", "ubuntu"}
+	if len(segments) != len(want) {
+		t.Fatalf("hierarchyForVMX() len = %d, want %d (%v)", len(segments), len(want), segments)
+	}
+	for i := range want {
+		if segments[i] != want[i] {
+			t.Fatalf("hierarchyForVMX()[%d] = %q, want %q", i, segments[i], want[i])
+		}
+	}
+	if displayPath != "lab / ubuntu" {
+		t.Fatalf("displayPath = %q, want %q", displayPath, "lab / ubuntu")
+	}
+}
+
+func TestHierarchyForVMXFallsBackToHomeRelativePath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	vmxPath := filepath.Join(home, "custom-vms", "team-a", "builder", "builder.vmx")
+	segments, displayPath := hierarchyForVMX(vmxPath, "")
+
+	want := []string{"custom-vms", "team-a", "builder"}
+	if len(segments) != len(want) {
+		t.Fatalf("hierarchyForVMX() len = %d, want %d (%v)", len(segments), len(want), segments)
+	}
+	for i := range want {
+		if segments[i] != want[i] {
+			t.Fatalf("hierarchyForVMX()[%d] = %q, want %q", i, segments[i], want[i])
+		}
+	}
+	if displayPath != "custom-vms / team-a / builder" {
+		t.Fatalf("displayPath = %q, want %q", displayPath, "custom-vms / team-a / builder")
 	}
 }
 

@@ -132,3 +132,25 @@ func (a *App) ListSSHKeys() ([]config.KeyMeta, error) {
 func (a *App) DeleteSSHKey(label string) error {
 	return config.DeleteKey(label)
 }
+
+// --- Guest Credential Management ---
+
+func (a *App) CreateGuestCredential(label, username, password string) (config.GuestCredentialMeta, error) {
+	return config.CreateGuestCredential(label, username, password)
+}
+
+func (a *App) ListGuestCredentials() ([]config.GuestCredentialMeta, error) {
+	return config.ListGuestCredentials()
+}
+
+func (a *App) GetGuestCredential(label string) (config.GuestCredential, error) {
+	return config.LoadGuestCredential(label)
+}
+
+func (a *App) UpdateGuestCredential(currentLabel, newLabel, username, password string) (config.GuestCredentialMeta, error) {
+	return config.UpdateGuestCredential(currentLabel, newLabel, username, password)
+}
+
+func (a *App) DeleteGuestCredential(label string) error {
+	return config.DeleteGuestCredential(label)
+}

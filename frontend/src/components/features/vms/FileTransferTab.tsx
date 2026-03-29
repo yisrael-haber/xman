@@ -3,6 +3,7 @@ import { manager } from '../../../../wailsjs/go/models';
 import { Upload, Download, SSHUpload, SSHDownload } from '../../../../wailsjs/go/manager/Manager';
 import { OpenFileDialog, SaveFileDialog } from '../../../../wailsjs/go/main/App';
 import useSSHKeys from '../../../hooks/useSSHKeys';
+import useGuestCredentials from '../../../hooks/useGuestCredentials';
 
 type Mode = 'vmware' | 'ssh';
 
@@ -14,15 +15,13 @@ interface Props {
 
 export default function FileTransferTab({ vm, onJobStarted }: Props) {
     const [mode, setMode] = useState<Mode>('vmware');
-
-    // VMware guest-ops credentials
-    const [username, setUsername] = useState('');
-    const [password, setPassword] = useState('');
+    const [credentialLabel, setCredentialLabel] = useState('');
 
     // SSH key-based params
     const [sshHost, setSshHost] = useState(vm.ipAddress || '');
     const [keyLabel, setKeyLabel] = useState('');
     const { keys, error: keysError } = useSSHKeys();
+    const { credentials, error: credentialsError } = useGuestCredentials();
 
     // Keep SSH host in sync with selected VM's IP (including when it appears after boot).
     useEffect(() => { setSshHost(vm.ipAddress || ''); }, [vm.ref, vm.ipAddress]);
@@ -37,6 +36,16 @@ export default function FileTransferTab({ vm, onJobStarted }: Props) {
         }
     }, [keys, keyLabel]);
 
+    useEffect(() => {
+        if (!credentials.length) {
+            setCredentialLabel('');
+            return;
+        }
+        if (!credentialLabel || !credentials.some(c => c.label === credentialLabel)) {
+            setCredentialLabel(credentials[0].label);
+        }
+    }, [credentials, credentialLabel]);
+
     const [upLocal, setUpLocal] = useState('');
     const [upGuest, setUpGuest] = useState('');
     const [upBusy,  setUpBusy]  = useState(false);
@@ -47,9 +56,11 @@ export default function FileTransferTab({ vm, onJobStarted }: Props) {
     const [dlBusy,  setDlBusy]  = useState(false);
     const [dlErr,   setDlErr]   = useState('');
 
-    const toolsOk = vm.toolsStatus === 'toolsOk' || vm.toolsStatus === 'toolsOld';
     const selectedKey = keys.find(k => k.label === keyLabel);
+    const selectedCredential = credentials.find(c => c.label === credentialLabel);
     const sshUser = selectedKey?.defaultUser?.trim() || '';
+    const guestOpsReady = vm.powerState === 'poweredOn';
+    const toolsReady = vm.toolsStatus === 'toolsOk' || vm.toolsStatus === 'toolsOld';
 
     async function pickUploadFile() {
         const path = await OpenFileDialog('Select file to upload');
@@ -69,7 +80,7 @@ export default function FileTransferTab({ vm, onJobStarted }: Props) {
             if (mode === 'ssh') {
                 id = await SSHUpload({ host: sshHost, keyLabel, localPath: upLocal, guestPath: upGuest });
             } else {
-                id = await Upload({ vmRef: vm.ref, username, password, localPath: upLocal, guestPath: upGuest, guestOS: vm.guestOS });
+                id = await Upload({ vmRef: vm.ref, credentialLabel, username: '', password: '', localPath: upLocal, guestPath: upGuest, guestOS: vm.guestOS });
             }
             onJobStarted(id, vm.name || vm.ref);
         } catch (e: any) {
@@ -86,7 +97,7 @@ export default function FileTransferTab({ vm, onJobStarted }: Props) {
             if (mode === 'ssh') {
                 id = await SSHDownload({ host: sshHost, keyLabel, guestPath: dlGuest, localPath: dlLocal });
             } else {
-                id = await Download({ vmRef: vm.ref, username, password, guestPath: dlGuest, localPath: dlLocal });
+                id = await Download({ vmRef: vm.ref, credentialLabel, username: '', password: '', guestPath: dlGuest, localPath: dlLocal });
             }
             onJobStarted(id, vm.name || vm.ref);
         } catch (e: any) {
@@ -109,18 +120,31 @@ export default function FileTransferTab({ vm, onJobStarted }: Props) {
                 </div>
 
                 {mode === 'vmware' ? (
-                    <div className="cred-row">
-                        <div className="field field--inline">
-                            <label>Username</label>
-                            <input value={username} onChange={e => setUsername(e.target.value)}
-                                placeholder="root" autoComplete="off" />
+                    <>
+                        {credentialsError && <p className="form-error">{credentialsError}</p>}
+                        {!credentialsError && credentials.length === 0 && (
+                            <div className="notice notice--warn">
+                                No guest credentials found. Create one in Guest Credentials first.
+                            </div>
+                        )}
+
+                        <div className="cred-row">
+                            <div className="field field--inline">
+                                <label>Credential</label>
+                                <select value={credentialLabel} onChange={e => setCredentialLabel(e.target.value)} disabled={!credentials.length}>
+                                    {credentials.map(credential => (
+                                        <option key={credential.label} value={credential.label}>
+                                            {credential.label} ({credential.username})
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                            <div className="field field--inline">
+                                <label>Username</label>
+                                <input value={selectedCredential?.username ?? ''} readOnly placeholder="Select a stored credential" />
+                            </div>
                         </div>
-                        <div className="field field--inline">
-                            <label>Password</label>
-                            <input type="password" value={password} onChange={e => setPassword(e.target.value)}
-                                autoComplete="off" />
-                        </div>
-                    </div>
+                    </>
                 ) : (
                     <>
                         {keysError && <p className="form-error">{keysError}</p>}
@@ -163,9 +187,15 @@ export default function FileTransferTab({ vm, onJobStarted }: Props) {
                     </>
                 )}
 
-                {mode === 'vmware' && !toolsOk && (
+                {mode === 'vmware' && !guestOpsReady && (
                     <div className="notice notice--warn">
-                        Guest operations require VMware Tools to be running. Switch to SSH/SFTP or start Tools to transfer files.
+                        Guest operations require the VM to be powered on.
+                    </div>
+                )}
+
+                {mode === 'vmware' && guestOpsReady && !toolsReady && (
+                    <div className="notice notice--warn">
+                        This VM is powered on, so guest operations can be attempted even though VMware Tools may not be ready yet. If the backend rejects the transfer, the error will appear here.
                     </div>
                 )}
             </div>
@@ -189,7 +219,7 @@ export default function FileTransferTab({ vm, onJobStarted }: Props) {
                     {upErr && <p className="form-error">{upErr}</p>}
                     <button className="btn-primary" onClick={handleUpload}
                         disabled={upBusy || !upLocal || !upGuest ||
-                            (mode === 'vmware' ? (!username || !toolsOk) : !sshReady)}>
+                            (mode === 'vmware' ? (!credentialLabel || !guestOpsReady) : !sshReady)}>
                         {upBusy ? 'Starting...' : 'Upload'}
                     </button>
                 </div>
@@ -214,7 +244,7 @@ export default function FileTransferTab({ vm, onJobStarted }: Props) {
                     {dlErr && <p className="form-error">{dlErr}</p>}
                     <button className="btn-primary" onClick={handleDownload}
                         disabled={dlBusy || !dlGuest || !dlLocal ||
-                            (mode === 'vmware' ? (!username || !toolsOk) : !sshReady)}>
+                            (mode === 'vmware' ? (!credentialLabel || !guestOpsReady) : !sshReady)}>
                         {dlBusy ? 'Starting...' : 'Download'}
                     </button>
                 </div>

@@ -465,6 +465,72 @@
     flex: 1;
 }
 
+.vm-tree {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.vm-folder {
+    margin: 0;
+}
+
+.vm-folder-row {
+    width: calc(100% - 0.5rem);
+    margin: 0 0.25rem 0.24rem;
+    padding: 0.55rem 0.8rem;
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    border: 1px solid transparent;
+    border-radius: 12px;
+    background: transparent;
+    color: #95afc8;
+    cursor: pointer;
+    text-align: left;
+    transition: background 0.1s, border-color 0.1s, color 0.1s;
+}
+
+.vm-folder-row:hover {
+    background: rgba(31, 49, 69, 0.88);
+    border-color: rgba(95, 129, 163, 0.18);
+    color: #dbe8f6;
+}
+
+.vm-folder-row--expanded {
+    color: #dbe8f6;
+}
+
+.vm-folder-chevron,
+.vm-folder-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.vm-folder-chevron {
+    color: #6f8ba7;
+    transition: transform 0.12s ease;
+}
+
+.vm-folder-chevron--expanded {
+    transform: rotate(90deg);
+}
+
+.vm-folder-icon {
+    color: #d7a24a;
+}
+
+.vm-folder-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
 .vm-item {
     display: flex;
     align-items: center;
@@ -1496,9 +1562,20 @@ body {
 }
 
 .vm-browser-header {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.75rem;
     padding: 0.8rem 0.95rem;
     background: rgba(22, 36, 52, 0.72);
     border-bottom: 1px solid rgba(102, 133, 163, 0.15);
+}
+
+.vm-browser-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
 }
 
 .vm-browser-title,
@@ -1506,6 +1583,74 @@ body {
 .ssh-keys-list-header {
     color: #87a7c7;
     letter-spacing: 0.08em;
+}
+
+.vm-browser-search {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0 0.55rem;
+    border: 1px solid rgba(95, 129, 163, 0.18);
+    border-radius: 14px;
+    background: rgba(10, 20, 31, 0.92);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+    transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+}
+
+.vm-browser-search:focus-within {
+    border-color: rgba(74,158,218,0.55);
+    box-shadow: 0 0 0 3px rgba(74,158,218,0.12), inset 0 1px 0 rgba(255,255,255,0.03);
+    background: rgba(13, 24, 36, 0.96);
+}
+
+.vm-browser-search-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #6a88a7;
+    flex-shrink: 0;
+}
+
+.vm-browser-search input {
+    flex: 1;
+    min-width: 0;
+    height: 36px;
+    border: none;
+    background: transparent;
+    color: #e8f1fb;
+    outline: none;
+    font-size: 0.82rem;
+}
+
+.vm-browser-search input::placeholder {
+    color: #5b748d;
+}
+
+.vm-browser-search-clear {
+    width: 24px;
+    height: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    border-radius: 999px;
+    background: transparent;
+    color: #7d9bb9;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background 0.15s, color 0.15s;
+}
+
+.vm-browser-search-clear:hover {
+    background: rgba(54, 80, 105, 0.28);
+    color: #dbe8f6;
+}
+
+.vm-browser-search-meta {
+    margin: 0.55rem 0 0;
+    font-size: 0.72rem;
+    color: #6684a3;
+    letter-spacing: 0.02em;
 }
 
 .vm-item {
@@ -1628,6 +1773,15 @@ body {
     font-size: 1.2rem;
     line-height: 1.15;
     letter-spacing: 0.01em;
+}
+
+.vm-detail-path {
+    color: #7f9ab5;
+    font-size: 0.78rem;
+    letter-spacing: 0.01em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .vm-detail-meta {

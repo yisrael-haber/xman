@@ -457,15 +457,24 @@ func (b *Backend) loadRuntimeDetails(ctx context.Context, vmx string) (guestRunt
 	return info, true
 }
 
-func (b *Backend) vmInfoFromPath(ctx context.Context, vmxPath string, running map[string]struct{}, refreshRuntime bool) manager.VMInfo {
+func (b *Backend) vmInfoFromPath(ctx context.Context, vmxPath string, running map[string]struct{}, refreshRuntime bool, metadata *inventoryVM) manager.VMInfo {
 	info := manager.VMInfo{Ref: vmxPath}
+	localVMXPath := localPathForVMX(vmxPath)
+	if metadata != nil {
+		info.PathSegments = append([]string(nil), metadata.PathSegments...)
+		info.DisplayPath = strings.Join(info.PathSegments, " / ")
+	} else {
+		info.PathSegments, info.DisplayPath = hierarchyForVMX(localVMXPath, b.vmDir)
+	}
 
-	vmxData, err := parseVMX(vmxPath)
+	vmxData, err := parseVMX(localVMXPath)
 	if err == nil {
 		info.Name = vmxData.DisplayName
 		info.GuestOS = vmxData.GuestOS
 		info.NumCPU = vmxData.NumCPU
 		info.MemoryMB = vmxData.MemoryMB
+	} else if metadata != nil && metadata.DisplayName != "" {
+		info.Name = metadata.DisplayName
 	}
 
 	if _, on := running[vmxPath]; on {
@@ -493,7 +502,7 @@ func (b *Backend) vmInfoFromPath(ctx context.Context, vmxPath string, running ma
 		return info
 	}
 
-	if isSuspended(vmxPath) {
+	if isSuspended(localVMXPath) {
 		info.PowerState = "suspended"
 		info.ToolsStatus = "toolsNotRunning"
 		b.clearRuntime(vmxPath)
@@ -596,21 +605,29 @@ func (b *Backend) ListVMs(ctx context.Context) ([]manager.VMInfo, error) {
 	inventoryStarted := time.Now()
 	inventorySource := "inventory"
 	b.traceEvent("list_vms_begin", "vm_dir", b.vmDir)
+	var inventoryEntries []inventoryVM
 	invPath, err := inventoryPath()
 	if err != nil {
 		b.traceEvent("list_vms_inventory_path_error", "error", err)
-		return nil, fmt.Errorf("locating inventory: %w", err)
+	} else {
+		inventoryEntries, err = parseInventoryVMs(invPath)
+		if err != nil {
+			b.traceEvent("list_vms_inventory_parse_error", "inventory_path", invPath, "error", err)
+			if b.vmDir == "" {
+				return nil, err
+			}
+			inventoryEntries = nil
+		}
 	}
+	inventoryMetadata := inventoryMetadataByPath(inventoryEntries)
 
 	var vmxPaths []string
 	if b.vmDir != "" {
 		inventorySource = "vm_dir"
 		vmxPaths, err = scanDirectory(b.vmDir)
 	} else {
-		vmxPaths, err = parseInventory(invPath)
-		if err != nil {
-			b.traceEvent("list_vms_inventory_parse_error", "inventory_path", invPath, "error", err)
-			return nil, err
+		for _, entry := range inventoryEntries {
+			vmxPaths = append(vmxPaths, entry.Path)
 		}
 		if len(vmxPaths) == 0 {
 			inventorySource = "scan_fallback"
@@ -676,7 +693,13 @@ func (b *Backend) ListVMs(ctx context.Context) ([]manager.VMInfo, error) {
 				"refresh_runtime", refreshRuntime,
 			)
 
-			info := b.vmInfoFromPath(ctx, vmxPath, running, refreshRuntime)
+			var vmMeta *inventoryVM
+			if entry, ok := inventoryMetadataForPath(inventoryMetadata, vmxPath); ok {
+				entryCopy := entry
+				vmMeta = &entryCopy
+			}
+
+			info := b.vmInfoFromPath(ctx, vmxPath, running, refreshRuntime, vmMeta)
 
 			ch <- result{idx: idx, info: info}
 		}(i, vmx)
@@ -711,9 +734,19 @@ func (b *Backend) GetVM(ctx context.Context, vmRef string) (manager.VMInfo, erro
 		return manager.VMInfo{}, err
 	}
 
-	info := b.vmInfoFromPath(ctx, vmRef, running, true)
+	var vmMeta *inventoryVM
+	if invPath, err := inventoryPath(); err == nil {
+		if entries, err := parseInventoryVMs(invPath); err == nil {
+			if entry, ok := inventoryMetadataForPath(inventoryMetadataByPath(entries), vmRef); ok {
+				entryCopy := entry
+				vmMeta = &entryCopy
+			}
+		}
+	}
+
+	info := b.vmInfoFromPath(ctx, vmRef, running, true, vmMeta)
 	if info.Name == "" {
-		if _, err := os.Stat(vmRef); err != nil {
+		if _, err := os.Stat(localPathForVMX(vmRef)); err != nil {
 			b.traceEvent("get_vm_not_found", "vm", vmLabel(vmRef), "error", err)
 			return manager.VMInfo{}, fmt.Errorf("VM %q not found", vmRef)
 		}

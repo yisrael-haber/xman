@@ -364,6 +364,94 @@ func TestGuestRunJobUsesSharedLabelAndFailureSemantics(t *testing.T) {
 	}
 }
 
+func TestGuestRunResolvesStoredCredentialLabelBeforeDelegating(t *testing.T) {
+	jm := jobs.NewManager(nil)
+	m := New(jm)
+
+	previousLoader := loadGuestCredential
+	loadGuestCredential = func(label string) (config.GuestCredential, error) {
+		if label != "linux-admin" {
+			t.Fatalf("loadGuestCredential label = %q, want %q", label, "linux-admin")
+		}
+		return config.GuestCredential{
+			GuestCredentialMeta: config.GuestCredentialMeta{
+				Label:    "linux-admin",
+				Username: "tester",
+			},
+			Password: "secret",
+		}, nil
+	}
+	defer func() { loadGuestCredential = previousLoader }()
+
+	var delegatedReq RunRequest
+	backend := &fakeBackend{
+		backendType: "workstation",
+		displayName: "Local Workstation",
+		guestRunFunc: func(ctx context.Context, emit jobs.EmitFn, req RunRequest) error {
+			delegatedReq = req
+			emit(100, "Command completed.")
+			return nil
+		},
+	}
+	m.ReplaceBackend(context.Background(), backend)
+
+	jobID := m.GuestRun(RunRequest{
+		VMRef:           "vm-1",
+		CredentialLabel: "linux-admin",
+		Command:         "hostname",
+		GuestOS:         "ubuntu-64",
+	})
+	job := waitForJob(t, jm, jobID)
+
+	if job.Status != jobs.StatusDone {
+		t.Fatalf("job status = %q, want %q", job.Status, jobs.StatusDone)
+	}
+	if delegatedReq.Username != "tester" || delegatedReq.Password != "secret" {
+		t.Fatalf("delegated guest run req = %+v, want resolved stored credential", delegatedReq)
+	}
+}
+
+func TestUploadCredentialLookupFailureFailsJobBeforeDelegating(t *testing.T) {
+	jm := jobs.NewManager(nil)
+	m := New(jm)
+
+	previousLoader := loadGuestCredential
+	loadGuestCredential = func(label string) (config.GuestCredential, error) {
+		return config.GuestCredential{}, errors.New("credential not found")
+	}
+	defer func() { loadGuestCredential = previousLoader }()
+
+	uploadCalls := 0
+	backend := &fakeBackend{
+		backendType: "workstation",
+		displayName: "Local Workstation",
+		uploadFunc: func(ctx context.Context, emit jobs.EmitFn, req UploadRequest) error {
+			uploadCalls++
+			return nil
+		},
+	}
+	m.ReplaceBackend(context.Background(), backend)
+
+	jobID := m.Upload(UploadRequest{
+		VMRef:           "vm-1",
+		CredentialLabel: "missing",
+		LocalPath:       "/tmp/local.iso",
+		GuestPath:       "/tmp/guest.iso",
+		GuestOS:         "ubuntu-64",
+	})
+	job := waitForJob(t, jm, jobID)
+
+	if job.Status != jobs.StatusFailed {
+		t.Fatalf("job status = %q, want %q", job.Status, jobs.StatusFailed)
+	}
+	if !strings.Contains(job.Error, "credential not found") {
+		t.Fatalf("job error = %q, want credential lookup failure", job.Error)
+	}
+	if uploadCalls != 0 {
+		t.Fatalf("uploadCalls = %d, want %d when credential lookup fails", uploadCalls, 0)
+	}
+}
+
 func TestUploadAndDownloadJobsUseExpectedLabels(t *testing.T) {
 	jm := jobs.NewManager(nil)
 	m := New(jm)

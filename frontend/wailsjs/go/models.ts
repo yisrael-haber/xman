@@ -44,6 +44,36 @@ export namespace config {
 	        this.toolsInstall = source["toolsInstall"];
 	    }
 	}
+	export class GuestCredential {
+	    label: string;
+	    username: string;
+	    password: string;
+
+	    static createFrom(source: any = {}) {
+	        return new GuestCredential(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.label = source["label"];
+	        this.username = source["username"];
+	        this.password = source["password"];
+	    }
+	}
+	export class GuestCredentialMeta {
+	    label: string;
+	    username: string;
+
+	    static createFrom(source: any = {}) {
+	        return new GuestCredentialMeta(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.label = source["label"];
+	        this.username = source["username"];
+	    }
+	}
 	export class KeyMeta {
 	    label: string;
 	    algorithm: string;
@@ -223,6 +253,7 @@ export namespace manager {
 	}
 	export class DownloadRequest {
 	    vmRef: string;
+	    credentialLabel: string;
 	    username: string;
 	    password: string;
 	    guestPath: string;
@@ -235,6 +266,7 @@ export namespace manager {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.vmRef = source["vmRef"];
+	        this.credentialLabel = source["credentialLabel"];
 	        this.username = source["username"];
 	        this.password = source["password"];
 	        this.guestPath = source["guestPath"];
@@ -271,6 +303,7 @@ export namespace manager {
 	}
 	export class InstallRequest {
 	    vmRef: string;
+	    credentialLabel: string;
 	    username: string;
 	    password: string;
 	    localPath: string;
@@ -284,6 +317,7 @@ export namespace manager {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.vmRef = source["vmRef"];
+	        this.credentialLabel = source["credentialLabel"];
 	        this.username = source["username"];
 	        this.password = source["password"];
 	        this.localPath = source["localPath"];
@@ -382,6 +416,7 @@ export namespace manager {
 	
 	export class RunRequest {
 	    vmRef: string;
+	    credentialLabel: string;
 	    username: string;
 	    password: string;
 	    command: string;
@@ -394,6 +429,7 @@ export namespace manager {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.vmRef = source["vmRef"];
+	        this.credentialLabel = source["credentialLabel"];
 	        this.username = source["username"];
 	        this.password = source["password"];
 	        this.command = source["command"];
@@ -498,6 +534,7 @@ export namespace manager {
 	
 	export class UploadRequest {
 	    vmRef: string;
+	    credentialLabel: string;
 	    username: string;
 	    password: string;
 	    localPath: string;
@@ -511,6 +548,7 @@ export namespace manager {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.vmRef = source["vmRef"];
+	        this.credentialLabel = source["credentialLabel"];
 	        this.username = source["username"];
 	        this.password = source["password"];
 	        this.localPath = source["localPath"];
@@ -521,6 +559,8 @@ export namespace manager {
 	export class VMInfo {
 	    ref: string;
 	    name: string;
+	    pathSegments: string[];
+	    displayPath: string;
 	    powerState: string;
 	    toolsStatus: string;
 	    guestOS: string;
@@ -536,6 +576,8 @@ export namespace manager {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.ref = source["ref"];
 	        this.name = source["name"];
+	        this.pathSegments = source["pathSegments"];
+	        this.displayPath = source["displayPath"];
 	        this.powerState = source["powerState"];
 	        this.toolsStatus = source["toolsStatus"];
 	        this.guestOS = source["guestOS"];
@@ -546,4 +588,3 @@ export namespace manager {
 	}
 
 }
-

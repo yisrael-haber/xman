@@ -8,13 +8,21 @@ export function Connect(arg1:config.ConnectRequest):Promise<config.ConnectionInf
 
 export function ConnectionInfo():Promise<config.ConnectionInfo>;
 
+export function CreateGuestCredential(arg1:string,arg2:string,arg3:string):Promise<config.GuestCredentialMeta>;
+
 export function CreateSSHKey(arg1:string,arg2:string,arg3:string):Promise<config.KeyMeta>;
+
+export function DeleteGuestCredential(arg1:string):Promise<void>;
 
 export function DeleteSSHKey(arg1:string):Promise<void>;
 
 export function Disconnect():Promise<void>;
 
+export function GetGuestCredential(arg1:string):Promise<config.GuestCredential>;
+
 export function LaunchInteractiveSSHSession(arg1:string,arg2:string):Promise<void>;
+
+export function ListGuestCredentials():Promise<Array<config.GuestCredentialMeta>>;
 
 export function ListSSHKeys():Promise<Array<config.KeyMeta>>;
 
@@ -27,3 +35,5 @@ export function OpenFileDialog(arg1:string):Promise<string>;
 export function SaveConnectionSettings(arg1:config.ConnectRequest):Promise<void>;
 
 export function SaveFileDialog(arg1:string,arg2:string):Promise<string>;
+
+export function UpdateGuestCredential(arg1:string,arg2:string,arg3:string,arg4:string):Promise<config.GuestCredentialMeta>;

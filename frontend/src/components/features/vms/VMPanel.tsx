@@ -115,7 +115,11 @@ export default function VMPanel({ onJobStarted, toolsInstall, guestOps, backendT
         try {
             const vm = await VMGet(vmRef);
             if (selectedRefreshRef.current !== token) return;
-            setSelected(prev => prev?.ref === vmRef ? vm : prev);
+            setSelected(prev => prev?.ref === vmRef ? {
+                ...vm,
+                pathSegments: vm.pathSegments?.length ? vm.pathSegments : prev.pathSegments,
+                displayPath: vm.displayPath || prev.displayPath,
+            } : prev);
         } catch {
             // Keep the lighter list data if the targeted detail refresh fails.
         }
@@ -157,6 +161,11 @@ export default function VMPanel({ onJobStarted, toolsInstall, guestOps, backendT
                                         {formatPowerState(selected.powerState)}
                                     </span>
                                 </div>
+                                {selected.displayPath && (
+                                    <div className="vm-detail-path" title={selected.displayPath}>
+                                        {selected.displayPath}
+                                    </div>
+                                )}
                                 <div className="vm-detail-meta">
                                     <span>{selected.guestOS || 'Guest OS unavailable'}</span>
                                     <span>{selected.ipAddress || 'No IP reported yet'}</span>

@@ -83,10 +83,10 @@ vcsim-build:
 	go build -o $(VCSIM) ./cmd/vcsim
 
 ## vcsim: build and start vcsim in the foreground — Ctrl+C to stop
-## options: DC=1 CLUSTER=1 HOST=3 VM=5 U=user P=pass
+## options: DC=1 FOLDER=1 CLUSTER=1 HOST=3 VM=5 U=user P=pass DEMO_TREE=true
 ## connect: http://127.0.0.1:8989/sdk  skip-tls:false
 vcsim: vcsim-build
-	exec $(VCSIM) -dc $(or $(DC),1) -cluster $(or $(CLUSTER),1) -host $(or $(HOST),3) -vm $(or $(VM),5) -u $(or $(U),user) -p $(or $(P),pass)
+	exec $(VCSIM) -dc $(or $(DC),1) -folder $(or $(FOLDER),1) -cluster $(or $(CLUSTER),1) -host $(or $(HOST),3) -vm $(or $(VM),5) -u $(or $(U),user) -p $(or $(P),pass) -demo-tree=$(or $(DEMO_TREE),true)
 
 ## vcsim-stop: stop a background vcsim started with vcsim-bg
 vcsim-stop:

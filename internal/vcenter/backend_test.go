@@ -102,6 +102,9 @@ func TestListVMsAndGetVM(t *testing.T) {
 	if vm.Ref == "" || vm.Name == "" {
 		t.Fatalf("ListVMs() returned incomplete VM info: %+v", vm)
 	}
+	if len(vm.PathSegments) < 2 || vm.DisplayPath == "" {
+		t.Fatalf("ListVMs() missing nested hierarchy info: %+v", vm)
+	}
 
 	got, err := backend.GetVM(ctx, vm.Ref)
 	if err != nil {
@@ -113,6 +116,9 @@ func TestListVMsAndGetVM(t *testing.T) {
 	}
 	if got.NumCPU <= 0 || got.MemoryMB <= 0 {
 		t.Fatalf("GetVM() returned empty hardware fields: %+v", got)
+	}
+	if len(got.PathSegments) < 2 || got.DisplayPath == "" {
+		t.Fatalf("GetVM() missing nested display path: %+v", got)
 	}
 }
 
@@ -450,6 +456,7 @@ func newTestModel() *simulator.Model {
 	model.Host = 1
 	model.Datastore = 1
 	model.Machine = 1
+	model.Folder = 1
 	model.Portgroup = 1
 	return model
 }

@@ -3,6 +3,7 @@ import { manager } from '../../../../wailsjs/go/models';
 import { Install, SSHInstall } from '../../../../wailsjs/go/manager/Manager';
 import { OpenFileDialog } from '../../../../wailsjs/go/main/App';
 import useSSHKeys from '../../../hooks/useSSHKeys';
+import useGuestCredentials from '../../../hooks/useGuestCredentials';
 
 type Mode = 'vmware' | 'ssh';
 
@@ -38,8 +39,7 @@ function deriveCommand(localPath: string): string {
 
 export default function RemoteInstallTab({ vm, onJobStarted }: Props) {
     const [mode,      setMode]      = useState<Mode>('vmware');
-    const [username,  setUsername]  = useState('');
-    const [password,  setPassword]  = useState('');
+    const [credentialLabel, setCredentialLabel] = useState('');
     const [sshHost,   setSshHost]   = useState(vm.ipAddress || '');
     const [keyLabel,  setKeyLabel]  = useState('');
     const [localPath, setLocalPath] = useState('');
@@ -47,6 +47,7 @@ export default function RemoteInstallTab({ vm, onJobStarted }: Props) {
     const [busy,      setBusy]      = useState(false);
     const [error,     setError]     = useState('');
     const { keys, error: keysError } = useSSHKeys();
+    const { credentials, error: credentialsError } = useGuestCredentials();
 
     useEffect(() => { setSshHost(vm.ipAddress || ''); }, [vm.ref, vm.ipAddress]);
 
@@ -60,14 +61,26 @@ export default function RemoteInstallTab({ vm, onJobStarted }: Props) {
         }
     }, [keys, keyLabel]);
 
+    useEffect(() => {
+        if (!credentials.length) {
+            setCredentialLabel('');
+            return;
+        }
+        if (!credentialLabel || !credentials.some(c => c.label === credentialLabel)) {
+            setCredentialLabel(credentials[0].label);
+        }
+    }, [credentials, credentialLabel]);
+
     // Auto-derive install command when the selected file changes.
     useEffect(() => {
         setCommand(localPath ? deriveCommand(localPath) : '');
     }, [localPath]);
 
-    const toolsOk = vm.toolsStatus === 'toolsOk' || vm.toolsStatus === 'toolsOld';
     const selectedKey = keys.find(k => k.label === keyLabel);
+    const selectedCredential = credentials.find(c => c.label === credentialLabel);
     const sshUser = selectedKey?.defaultUser?.trim() || '';
+    const guestOpsReady = vm.powerState === 'poweredOn';
+    const toolsReady = vm.toolsStatus === 'toolsOk' || vm.toolsStatus === 'toolsOld';
 
     async function pickFile() {
         const p = await OpenFileDialog('Select installer package');
@@ -88,7 +101,9 @@ export default function RemoteInstallTab({ vm, onJobStarted }: Props) {
             } else {
                 id = await Install({
                     vmRef: vm.ref,
-                    username, password,
+                    credentialLabel,
+                    username: '',
+                    password: '',
                     localPath, guestOS: vm.guestOS,
                     command,
                 });
@@ -105,7 +120,7 @@ export default function RemoteInstallTab({ vm, onJobStarted }: Props) {
     const validExt = SUPPORTED_EXTS.includes(ext);
     const sshReady = !!sshHost.trim() && !!keyLabel && !!sshUser;
     const canInstall = !busy && !!localPath && validExt && !!command &&
-        (mode === 'ssh' ? sshReady : (!!username && toolsOk));
+        (mode === 'ssh' ? sshReady : (!!credentialLabel && guestOpsReady));
 
     return (
         <div className="tab-body tab-body--fill tab-body--centered">
@@ -118,18 +133,31 @@ export default function RemoteInstallTab({ vm, onJobStarted }: Props) {
                 </div>
 
                 {mode === 'vmware' ? (
-                    <div className="cred-row">
-                        <div className="field field--inline">
-                            <label>Username</label>
-                            <input value={username} onChange={e => setUsername(e.target.value)}
-                                placeholder="Administrator" autoComplete="off" />
+                    <>
+                        {credentialsError && <p className="form-error">{credentialsError}</p>}
+                        {!credentialsError && credentials.length === 0 && (
+                            <div className="notice notice--warn">
+                                No guest credentials found. Create one in Guest Credentials first.
+                            </div>
+                        )}
+
+                        <div className="cred-row">
+                            <div className="field field--inline">
+                                <label>Credential</label>
+                                <select value={credentialLabel} onChange={e => setCredentialLabel(e.target.value)} disabled={!credentials.length}>
+                                    {credentials.map(credential => (
+                                        <option key={credential.label} value={credential.label}>
+                                            {credential.label} ({credential.username})
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                            <div className="field field--inline">
+                                <label>Username</label>
+                                <input value={selectedCredential?.username ?? ''} readOnly placeholder="Select a stored credential" />
+                            </div>
                         </div>
-                        <div className="field field--inline">
-                            <label>Password</label>
-                            <input type="password" value={password} onChange={e => setPassword(e.target.value)}
-                                autoComplete="off" />
-                        </div>
-                    </div>
+                    </>
                 ) : (
                     <>
                         {keysError && <p className="form-error">{keysError}</p>}
@@ -172,9 +200,15 @@ export default function RemoteInstallTab({ vm, onJobStarted }: Props) {
                     </>
                 )}
 
-                {mode === 'vmware' && !toolsOk && (
+                {mode === 'vmware' && !guestOpsReady && (
                     <div className="notice notice--warn">
-                        Guest operations require VMware Tools to be running. Switch to SSH/SFTP or start Tools to install packages.
+                        Guest operations require the VM to be powered on.
+                    </div>
+                )}
+
+                {mode === 'vmware' && guestOpsReady && !toolsReady && (
+                    <div className="notice notice--warn">
+                        This VM is powered on, so guest operations can be attempted even though VMware Tools may not be ready yet. If the backend rejects the install, the error will appear here.
                     </div>
                 )}
             </div>

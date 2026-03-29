@@ -63,6 +63,11 @@ func (b *Backend) ListVMs(ctx context.Context) ([]manager.VMInfo, error) {
 		return nil, err
 	}
 
+	hierarchy, err := b.inventoryHierarchy(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	m := view.NewManager(client.Client)
 	v, err := m.CreateContainerView(ctx, client.ServiceContent.RootFolder, []string{"VirtualMachine"}, true)
 	if err != nil {
@@ -75,6 +80,7 @@ func (b *Backend) ListVMs(ctx context.Context) ([]manager.VMInfo, error) {
 		"config.name", "config.guestFullName",
 		"config.hardware.numCPU", "config.hardware.memoryMB",
 		"runtime.powerState", "guest.toolsStatus", "guest.ipAddress",
+		"parent", "parentVApp",
 	}, &vms)
 	if err != nil {
 		return nil, fmt.Errorf("listing VMs: %w", err)
@@ -82,15 +88,17 @@ func (b *Backend) ListVMs(ctx context.Context) ([]manager.VMInfo, error) {
 
 	out := make([]manager.VMInfo, 0, len(vms))
 	for _, obj := range vms {
-		out = append(out, toVMInfo(obj))
+		out = append(out, toVMInfo(obj, hierarchy.pathSegments(vmParentRef(obj))))
 	}
 	return out, nil
 }
 
-func toVMInfo(obj mo.VirtualMachine) manager.VMInfo {
+func toVMInfo(obj mo.VirtualMachine, pathSegments []string) manager.VMInfo {
 	info := manager.VMInfo{
-		Ref:        obj.Reference().Value,
-		PowerState: string(obj.Runtime.PowerState),
+		Ref:          obj.Reference().Value,
+		PathSegments: pathSegments,
+		DisplayPath:  strings.Join(pathSegments, " / "),
+		PowerState:   string(obj.Runtime.PowerState),
 	}
 	if obj.Config != nil {
 		info.Name = obj.Config.Name
@@ -103,6 +111,132 @@ func toVMInfo(obj mo.VirtualMachine) manager.VMInfo {
 		info.IPAddress = obj.Guest.IpAddress
 	}
 	return info
+}
+
+type inventoryNode struct {
+	name   string
+	parent *types.ManagedObjectReference
+}
+
+type vmInventoryHierarchy struct {
+	nodes      map[string]inventoryNode
+	vmRootKeys map[string]struct{}
+}
+
+func (h vmInventoryHierarchy) pathSegments(parent *types.ManagedObjectReference) []string {
+	if parent == nil {
+		return nil
+	}
+
+	var path []string
+	for current := parent; current != nil; {
+		key := inventoryRefKey(*current)
+		if _, skip := h.vmRootKeys[key]; skip {
+			node, ok := h.nodes[key]
+			if !ok {
+				break
+			}
+			current = node.parent
+			continue
+		}
+
+		node, ok := h.nodes[key]
+		if !ok {
+			break
+		}
+
+		if node.name != "" {
+			path = append([]string{node.name}, path...)
+		}
+		current = node.parent
+	}
+
+	return path
+}
+
+func (b *Backend) inventoryHierarchy(ctx context.Context) (vmInventoryHierarchy, error) {
+	client, err := b.session.Client()
+	if err != nil {
+		return vmInventoryHierarchy{}, err
+	}
+
+	m := view.NewManager(client.Client)
+
+	folderView, err := m.CreateContainerView(ctx, client.ServiceContent.RootFolder, []string{"Folder"}, true)
+	if err != nil {
+		return vmInventoryHierarchy{}, fmt.Errorf("creating folder view: %w", err)
+	}
+	defer folderView.Destroy(ctx)
+
+	datacenterView, err := m.CreateContainerView(ctx, client.ServiceContent.RootFolder, []string{"Datacenter"}, true)
+	if err != nil {
+		return vmInventoryHierarchy{}, fmt.Errorf("creating datacenter view: %w", err)
+	}
+	defer datacenterView.Destroy(ctx)
+
+	vAppView, err := m.CreateContainerView(ctx, client.ServiceContent.RootFolder, []string{"VirtualApp"}, true)
+	if err != nil {
+		return vmInventoryHierarchy{}, fmt.Errorf("creating vApp view: %w", err)
+	}
+	defer vAppView.Destroy(ctx)
+
+	var folders []mo.Folder
+	if err := folderView.Retrieve(ctx, []string{"Folder"}, []string{"name", "parent"}, &folders); err != nil {
+		return vmInventoryHierarchy{}, fmt.Errorf("listing folders: %w", err)
+	}
+
+	var datacenters []mo.Datacenter
+	if err := datacenterView.Retrieve(ctx, []string{"Datacenter"}, []string{"name", "parent", "vmFolder"}, &datacenters); err != nil {
+		return vmInventoryHierarchy{}, fmt.Errorf("listing datacenters: %w", err)
+	}
+
+	var vApps []mo.VirtualApp
+	if err := vAppView.Retrieve(ctx, []string{"VirtualApp"}, []string{"name", "parentFolder", "parentVApp"}, &vApps); err != nil {
+		return vmInventoryHierarchy{}, fmt.Errorf("listing vApps: %w", err)
+	}
+
+	hierarchy := vmInventoryHierarchy{
+		nodes:      make(map[string]inventoryNode, len(folders)+len(datacenters)+len(vApps)),
+		vmRootKeys: make(map[string]struct{}, len(datacenters)),
+	}
+
+	for _, folder := range folders {
+		hierarchy.nodes[inventoryRefKey(folder.Reference())] = inventoryNode{
+			name:   folder.Name,
+			parent: folder.Parent,
+		}
+	}
+
+	for _, dc := range datacenters {
+		hierarchy.nodes[inventoryRefKey(dc.Reference())] = inventoryNode{
+			name: dc.Name,
+		}
+		hierarchy.vmRootKeys[inventoryRefKey(dc.VmFolder)] = struct{}{}
+	}
+
+	for _, vApp := range vApps {
+		parent := vApp.ParentFolder
+		if vApp.ParentVApp != nil {
+			parent = vApp.ParentVApp
+		}
+		hierarchy.nodes[inventoryRefKey(vApp.Reference())] = inventoryNode{
+			name:   vApp.Name,
+			parent: parent,
+		}
+	}
+
+	return hierarchy, nil
+}
+
+func inventoryRefKey(ref types.ManagedObjectReference) string {
+	return ref.Type + ":" + ref.Value
+}
+
+func vmParentRef(obj mo.VirtualMachine) *types.ManagedObjectReference {
+	if obj.ParentVApp != nil {
+		return obj.ParentVApp
+	}
+	return obj.Parent
 }
 
 func (b *Backend) vmObject(ctx context.Context, vmRef string) (*object.VirtualMachine, error) {
@@ -125,11 +259,51 @@ func (b *Backend) GetVM(ctx context.Context, vmRef string) (manager.VMInfo, erro
 		"config.name", "config.guestFullName",
 		"config.hardware.numCPU", "config.hardware.memoryMB",
 		"runtime.powerState", "guest.toolsStatus", "guest.ipAddress",
+		"parent", "parentVApp",
 	}, &obj); err != nil {
 		return manager.VMInfo{}, fmt.Errorf("reading VM properties: %w", err)
 	}
 
-	return toVMInfo(obj), nil
+	pathSegments, err := b.vmPathSegments(ctx, obj.Reference())
+	if err != nil {
+		return manager.VMInfo{}, err
+	}
+
+	return toVMInfo(obj, pathSegments), nil
+}
+
+func (b *Backend) vmPathSegments(ctx context.Context, vmRef types.ManagedObjectReference) ([]string, error) {
+	client, err := b.session.Client()
+	if err != nil {
+		return nil, err
+	}
+
+	entities, err := mo.Ancestors(ctx, client.Client, client.ServiceContent.PropertyCollector, vmRef)
+	if err != nil {
+		return nil, fmt.Errorf("resolving VM path: %w", err)
+	}
+
+	segments := make([]string, 0, len(entities))
+	for i, entity := range entities {
+		switch entity.Reference().Type {
+		case "Datacenter", "VirtualApp":
+			if entity.Name != "" {
+				segments = append(segments, entity.Name)
+			}
+		case "Folder":
+			if entity.Parent == nil {
+				continue
+			}
+			if i > 0 && entities[i-1].Reference().Type == "Datacenter" && entity.Name == "vm" {
+				continue
+			}
+			if entity.Name != "" {
+				segments = append(segments, entity.Name)
+			}
+		}
+	}
+
+	return segments, nil
 }
 
 func (b *Backend) PowerOn(ctx context.Context, vmRef string) error {

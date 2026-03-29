@@ -8,27 +8,33 @@ import (
 
 // UploadRequest is the payload sent from the frontend to start an upload.
 type UploadRequest struct {
-	VMRef     string `json:"vmRef"`
-	Username  string `json:"username"`
-	Password  string `json:"password"`
-	LocalPath string `json:"localPath"`
-	GuestPath string `json:"guestPath"`
-	GuestOS   string `json:"guestOS"` // used by backends to set correct file attributes
+	VMRef           string `json:"vmRef"`
+	CredentialLabel string `json:"credentialLabel"`
+	Username        string `json:"username"`
+	Password        string `json:"password"`
+	LocalPath       string `json:"localPath"`
+	GuestPath       string `json:"guestPath"`
+	GuestOS         string `json:"guestOS"` // used by backends to set correct file attributes
 }
 
 // DownloadRequest is the payload sent from the frontend to start a download.
 type DownloadRequest struct {
-	VMRef     string `json:"vmRef"`
-	Username  string `json:"username"`
-	Password  string `json:"password"`
-	GuestPath string `json:"guestPath"`
-	LocalPath string `json:"localPath"`
+	VMRef           string `json:"vmRef"`
+	CredentialLabel string `json:"credentialLabel"`
+	Username        string `json:"username"`
+	Password        string `json:"password"`
+	GuestPath       string `json:"guestPath"`
+	LocalPath       string `json:"localPath"`
 }
 
 func (m *Manager) Upload(req UploadRequest) string {
 	label := "Upload: " + req.LocalPath + " → " + req.GuestPath
 	return m.submitJob("filetransfer", label, func(ctx context.Context, emit jobs.EmitFn) error {
 		b, err := m.getBackend()
+		if err != nil {
+			return err
+		}
+		req, err = resolveUploadRequestCredential(req)
 		if err != nil {
 			return err
 		}
@@ -40,6 +46,10 @@ func (m *Manager) Download(req DownloadRequest) string {
 	label := "Download: " + req.GuestPath + " → " + req.LocalPath
 	return m.submitJob("filetransfer", label, func(ctx context.Context, emit jobs.EmitFn) error {
 		b, err := m.getBackend()
+		if err != nil {
+			return err
+		}
+		req, err = resolveDownloadRequestCredential(req)
 		if err != nil {
 			return err
 		}

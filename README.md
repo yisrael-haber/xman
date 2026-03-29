@@ -31,6 +31,10 @@ The core workflows are in good shape, the codebase has meaningful automated cove
 
 ### VM Management
 - Browse and select VMs with power state, VMware Tools state, IP address, CPU, and memory
+- Navigate a hierarchy-aware VM tree:
+  - `vCenter` uses inventory folders / vApps
+  - `Workstation` uses library folders from `inventory.vmls` when available, with filesystem hierarchy as fallback
+- Filter the VM browser by VM name, folder path, guest OS, IP, or VM reference
 - Power on, power off, reset, and suspend VMs
 - Keep job completion and VM state refresh synchronized
 
@@ -43,7 +47,7 @@ The core workflows are in good shape, the codebase has meaningful automated cove
 ### Run Command
 Run commands inside a guest VM using two transports:
 
-- **Guest Ops**: requires VMware Tools plus guest username/password
+- **Guest Ops**: uses a selected stored guest credential and requires VMware Tools
 - **SSH**: uses `host + SSH key` only; the SSH username comes from the selected key's default user
 
 Run Command is intentionally modeled as **separate shell sessions**, not a live terminal. Each new command replaces the previous output in the command pane.
@@ -67,7 +71,7 @@ Upload and download files to or from a guest VM using:
 - **Guest Ops**
 - **SSH / SFTP**
 
-For SSH / SFTP, the app uses a stored private key plus that key's default user. Guest passwords are not used for day-to-day SSH transfers.
+For SSH / SFTP, the app uses a stored private key plus that key's default user. For Guest Ops transfers, the app uses a selected stored guest credential. Guest passwords are not used for day-to-day SSH transfers.
 
 ### Remote Install
 Upload an installer package to the guest and execute it silently. Supports:
@@ -82,11 +86,14 @@ Upload an installer package to the guest and execute it silently. Supports:
 
 The detected install command is editable before execution.
 
-### SSH Keys
+### SSH Keys & Guest Credentials
 - Generate SSH key pairs inside the app
 - Store key metadata including a default SSH username
+- Store labeled guest credentials for VMware Guest Ops
+- View, edit, and delete stored guest credentials without retyping them for every run
 - Deploy the public key to a guest using a one-time password bootstrap flow
 - Use deployed keys for SSH / SFTP afterward without re-entering passwords
+- Use saved guest credentials from a dropdown in Run Command, File Transfer, and Remote Install
 
 ### Deploy SSH Key
 From the VM panel, deploy a selected SSH public key to a guest using:
@@ -163,7 +170,7 @@ This avoids keeping per-VM deployment state in local config and keeps the runtim
 
 Guest Ops transport for Run Command, File Transfer, and Remote Install requires:
 - VMware Tools or open-vm-tools installed and running
-- guest OS credentials
+- a stored guest credential
 - on vCenter, guest operations privileges on the VM
 
 Linux guests can usually use `open-vm-tools`:
@@ -177,6 +184,8 @@ sudo yum install open-vm-tools
 ```
 
 If VMware Tools are not available, switch to the SSH-based transport instead.
+
+The UI will still let you attempt Guest Ops on a powered-on VM even before the Tools state has been positively determined. If Tools are missing or not running, the backend error is surfaced in the tab instead of being blocked up front.
 
 ## Prerequisites
 
@@ -278,6 +287,13 @@ There is also a `vcsim` helper target for local vCenter-style simulator work:
 
 ```bash
 make vcsim
+```
+
+By default this starts a foldered simulator model plus an additional richer demo tree for browsing the VM hierarchy in the UI. Useful overrides:
+
+```bash
+make vcsim DEMO_TREE=false
+make vcsim DC=2 FOLDER=2 VM=3
 ```
 
 ## Workstation Performance Logging
@@ -400,13 +416,19 @@ Requirements:
 xman/
 ├── app.go
 ├── main.go
+├── cmd/
+│   └── vcsim/
+│       ├── demo_tree.go        # richer local simulator hierarchy seeding
+│       └── main.go
 ├── internal/
 │   ├── config/
+│   │   ├── guestcredentials.go # guest credential metadata + keyring-backed password storage
 │   │   └── sshkeys.go          # SSH keypair storage and metadata
 │   ├── jobs/                   # Background jobs, progress events, cancellation
 │   ├── manager/                # Backend-agnostic Wails-facing feature layer
 │   │   ├── backend.go
 │   │   ├── filetransfer.go
+│   │   ├── guestcredentials.go
 │   │   ├── guestexec.go
 │   │   ├── install.go
 │   │   ├── snapshots.go

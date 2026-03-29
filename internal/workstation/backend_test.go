@@ -63,6 +63,24 @@ func TestBackendGetVMMissingReturnsError(t *testing.T) {
 	}
 }
 
+func TestBackendVMInfoFromPathUsesInventoryRootMetadataWithoutFilesystemFallback(t *testing.T) {
+	backend := &Backend{vmDir: "/mnt/c/Users/yisra/RealDesktop/Virtual Machines"}
+
+	info := backend.vmInfoFromPath(context.Background(), `C:\Users\yisra\RealDesktop\Virtual Machines\kali1\Debian 13.x 64-bit.vmx`, map[string]struct{}{}, false, &inventoryVM{
+		DisplayName: "kali1",
+	})
+
+	if info.Name != "kali1" {
+		t.Fatalf("Name = %q, want %q", info.Name, "kali1")
+	}
+	if len(info.PathSegments) != 0 {
+		t.Fatalf("PathSegments = %v, want empty", info.PathSegments)
+	}
+	if info.DisplayPath != "" {
+		t.Fatalf("DisplayPath = %q, want empty", info.DisplayPath)
+	}
+}
+
 func TestBackendPowerAndSnapshotCommands(t *testing.T) {
 	vmDir := t.TempDir()
 	vmxPath := writeTestVMX(t, vmDir, "ops-vm", "ubuntu-64", 2, 2048)

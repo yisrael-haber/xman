@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	slashpath "path"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -22,12 +24,52 @@ func inventoryPath() (string, error) {
 		}
 		return filepath.Join(appData, "VMware", "inventory.vmls"), nil
 	default: // linux, darwin
-		home, err := os.UserHomeDir()
+		candidates, err := inventoryPathCandidates()
 		if err != nil {
 			return "", err
 		}
-		return filepath.Join(home, ".vmware", "inventory.vmls"), nil
+		for _, candidate := range candidates {
+			if _, err := os.Stat(candidate); err == nil {
+				return candidate, nil
+			}
+		}
+		if len(candidates) == 0 {
+			return "", fmt.Errorf("inventory.vmls not found")
+		}
+		return candidates[0], nil
 	}
+}
+
+func inventoryPathCandidates() ([]string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+
+	candidates := []string{filepath.Join(home, ".vmware", "inventory.vmls")}
+	windowsCandidates, err := filepath.Glob("/mnt/c/Users/*/AppData/Roaming/VMware/inventory.vmls")
+	if err == nil {
+		sort.Strings(windowsCandidates)
+		candidates = append(candidates, windowsCandidates...)
+	}
+	return candidates, nil
+}
+
+type inventoryVM struct {
+	Path         string
+	DisplayName  string
+	PathSegments []string
+	SeqID        int
+}
+
+type vmlistRecord struct {
+	Key         string
+	Config      string
+	DisplayName string
+	ParentID    string
+	ItemID      string
+	SeqID       int
+	HasSeqID    bool
 }
 
 // parseInventory reads inventory.vmls and returns the .vmx paths of all registered VMs.
@@ -37,6 +79,18 @@ func inventoryPath() (string, error) {
 //	item0.path = "/home/user/vmware/Ubuntu/Ubuntu.vmx"
 //	item0.type = "1"
 func parseInventory(path string) ([]string, error) {
+	entries, err := parseInventoryVMs(path)
+	if err != nil {
+		return nil, err
+	}
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		paths = append(paths, entry.Path)
+	}
+	return paths, nil
+}
+
+func parseInventoryVMs(path string) ([]inventoryVM, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -47,17 +101,23 @@ func parseInventory(path string) ([]string, error) {
 	defer f.Close()
 
 	kvs := parseKeyValue(f)
+	if entries := parseVmlistInventory(kvs); len(entries) > 0 {
+		return entries, nil
+	}
+	return parseLegacyInventory(kvs), nil
+}
 
+func parseLegacyInventory(kvs map[string]string) []inventoryVM {
 	countStr := kvs["inventory.count"]
 	if countStr == "" {
-		return nil, nil
+		return nil
 	}
 	count, err := strconv.Atoi(countStr)
 	if err != nil || count == 0 {
-		return nil, nil
+		return nil
 	}
 
-	paths := make([]string, 0, count)
+	entries := make([]inventoryVM, 0, count)
 	for i := 0; i < count; i++ {
 		// Linux/macOS use "item0.path"; Windows uses "item0.config"
 		p := kvs[fmt.Sprintf("item%d.config", i)]
@@ -65,10 +125,107 @@ func parseInventory(path string) ([]string, error) {
 			p = kvs[fmt.Sprintf("item%d.path", i)]
 		}
 		if p != "" {
-			paths = append(paths, p)
+			entries = append(entries, inventoryVM{Path: p, SeqID: i})
 		}
 	}
-	return paths, nil
+	return entries
+}
+
+func parseVmlistInventory(kvs map[string]string) []inventoryVM {
+	records := make(map[string]*vmlistRecord)
+	for key, value := range kvs {
+		prefix, field, ok := strings.Cut(key, ".")
+		if !ok || !strings.HasPrefix(prefix, "vmlist") {
+			continue
+		}
+
+		record := records[prefix]
+		if record == nil {
+			record = &vmlistRecord{Key: prefix}
+			records[prefix] = record
+		}
+
+		switch field {
+		case "config":
+			record.Config = value
+		case "DisplayName":
+			record.DisplayName = value
+		case "ParentID":
+			record.ParentID = value
+		case "ItemID":
+			record.ItemID = value
+		case "SeqID":
+			if seqID, err := strconv.Atoi(value); err == nil {
+				record.SeqID = seqID
+				record.HasSeqID = true
+			}
+		}
+	}
+
+	if len(records) == 0 {
+		return nil
+	}
+
+	byItemID := make(map[string]*vmlistRecord, len(records))
+	recordList := make([]*vmlistRecord, 0, len(records))
+	for _, record := range records {
+		if record.ItemID != "" {
+			byItemID[record.ItemID] = record
+		}
+		recordList = append(recordList, record)
+	}
+
+	sort.Slice(recordList, func(i, j int) bool {
+		left, right := recordList[i], recordList[j]
+		switch {
+		case left.HasSeqID && right.HasSeqID && left.SeqID != right.SeqID:
+			return left.SeqID < right.SeqID
+		case left.HasSeqID != right.HasSeqID:
+			return left.HasSeqID
+		default:
+			return left.Key < right.Key
+		}
+	})
+
+	entries := make([]inventoryVM, 0, len(recordList))
+	for _, record := range recordList {
+		if record.Config == "" {
+			continue
+		}
+		entries = append(entries, inventoryVM{
+			Path:         record.Config,
+			DisplayName:  record.DisplayName,
+			PathSegments: vmlistPathSegments(record.ParentID, byItemID),
+			SeqID:        record.SeqID,
+		})
+	}
+	return entries
+}
+
+func vmlistPathSegments(parentID string, byItemID map[string]*vmlistRecord) []string {
+	if parentID == "" || parentID == "0" {
+		return nil
+	}
+
+	var segments []string
+	visited := make(map[string]struct{})
+	currentID := parentID
+	for currentID != "" && currentID != "0" {
+		if _, seen := visited[currentID]; seen {
+			break
+		}
+		visited[currentID] = struct{}{}
+
+		record := byItemID[currentID]
+		if record == nil {
+			break
+		}
+		if record.Config == "" && record.DisplayName != "" {
+			segments = append([]string{record.DisplayName}, segments...)
+		}
+		currentID = record.ParentID
+	}
+	return segments
 }
 
 // vmxInfo holds the fields we care about from a .vmx file.
@@ -188,6 +345,150 @@ func scanDirectory(dir string) ([]string, error) {
 		}
 	}
 	return paths, nil
+}
+
+func hierarchyForVMX(vmxPath, configuredRoot string) ([]string, string) {
+	vmDir := filepath.Clean(filepath.Dir(localPathForVMX(vmxPath)))
+	root := bestHierarchyRoot(vmDir, configuredRoot)
+	if root == "" {
+		return nil, ""
+	}
+
+	rel, err := filepath.Rel(root, vmDir)
+	if err != nil || rel == "." || rel == "" || strings.HasPrefix(rel, "..") {
+		return nil, ""
+	}
+
+	segments := splitHierarchySegments(rel)
+	if len(segments) == 0 {
+		return nil, ""
+	}
+	return segments, strings.Join(segments, " / ")
+}
+
+func bestHierarchyRoot(vmDir, configuredRoot string) string {
+	candidates := make([]string, 0, len(defaultVMDirs())+2)
+	if configuredRoot != "" {
+		candidates = append(candidates, configuredRoot)
+	}
+	candidates = append(candidates, defaultVMDirs()...)
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		candidates = append(candidates, home)
+	}
+
+	best := ""
+	for _, candidate := range candidates {
+		if !pathWithinRoot(vmDir, candidate) {
+			continue
+		}
+		if len(filepath.Clean(candidate)) > len(best) {
+			best = filepath.Clean(candidate)
+		}
+	}
+	if best != "" {
+		return best
+	}
+
+	volume := filepath.VolumeName(vmDir)
+	if volume != "" {
+		return volume + string(filepath.Separator)
+	}
+	return string(filepath.Separator)
+}
+
+func pathWithinRoot(path, root string) bool {
+	if path == "" || root == "" {
+		return false
+	}
+
+	cleanPath := normalizeComparablePath(path)
+	cleanRoot := normalizeComparablePath(root)
+	if cleanPath == cleanRoot {
+		return true
+	}
+	return strings.HasPrefix(cleanPath, cleanRoot+string(filepath.Separator))
+}
+
+func normalizeComparablePath(value string) string {
+	cleaned := filepath.Clean(value)
+	if runtime.GOOS == "windows" {
+		return strings.ToLower(cleaned)
+	}
+	return cleaned
+}
+
+func localPathForVMX(vmxPath string) string {
+	if runtime.GOOS == "windows" || len(vmxPath) < 3 || vmxPath[1] != ':' {
+		return vmxPath
+	}
+
+	drive := strings.ToLower(string(vmxPath[0]))
+	rest := strings.ReplaceAll(vmxPath[2:], `\`, `/`)
+	rest = strings.TrimPrefix(rest, "/")
+	return slashpath.Clean("/mnt/" + drive + "/" + rest)
+}
+
+func inventoryLookupKey(value string) string {
+	if value == "" {
+		return ""
+	}
+	key := strings.ReplaceAll(strings.TrimSpace(value), `\`, `/`)
+	key = slashpath.Clean(key)
+	return strings.ToLower(key)
+}
+
+func inventoryLookupKeys(value string) []string {
+	keys := []string{inventoryLookupKey(value)}
+	local := localPathForVMX(value)
+	localKey := inventoryLookupKey(local)
+	if localKey != "" && localKey != keys[0] {
+		keys = append(keys, localKey)
+	}
+	return keys
+}
+
+func inventoryMetadataByPath(entries []inventoryVM) map[string]inventoryVM {
+	if len(entries) == 0 {
+		return nil
+	}
+
+	metadata := make(map[string]inventoryVM, len(entries)*2)
+	for _, entry := range entries {
+		for _, key := range inventoryLookupKeys(entry.Path) {
+			if key != "" {
+				metadata[key] = entry
+			}
+		}
+	}
+	return metadata
+}
+
+func inventoryMetadataForPath(metadata map[string]inventoryVM, path string) (inventoryVM, bool) {
+	if len(metadata) == 0 {
+		return inventoryVM{}, false
+	}
+	for _, key := range inventoryLookupKeys(path) {
+		if entry, ok := metadata[key]; ok {
+			return entry, true
+		}
+	}
+	return inventoryVM{}, false
+}
+
+func splitHierarchySegments(value string) []string {
+	if value == "" || value == "." {
+		return nil
+	}
+
+	raw := strings.Split(filepath.Clean(value), string(filepath.Separator))
+	segments := make([]string, 0, len(raw))
+	for _, segment := range raw {
+		if segment == "" || segment == "." {
+			continue
+		}
+		segments = append(segments, segment)
+	}
+	return segments
 }
 
 // detectVmrun searches common install locations and PATH for the vmrun binary.

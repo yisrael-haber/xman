@@ -13,12 +13,13 @@ import (
 
 // InstallRequest is the payload for installing a package via VMware guest ops.
 type InstallRequest struct {
-	VMRef     string `json:"vmRef"`
-	Username  string `json:"username"`
-	Password  string `json:"password"`
-	LocalPath string `json:"localPath"`
-	GuestOS   string `json:"guestOS"`
-	Command   string `json:"command"` // empty = auto-detect from file extension
+	VMRef           string `json:"vmRef"`
+	CredentialLabel string `json:"credentialLabel"`
+	Username        string `json:"username"`
+	Password        string `json:"password"`
+	LocalPath       string `json:"localPath"`
+	GuestOS         string `json:"guestOS"`
+	Command         string `json:"command"` // empty = auto-detect from file extension
 }
 
 // SSHInstallRequest is the payload for installing a package via SSH/SFTP.
@@ -104,6 +105,10 @@ func (m *Manager) Install(req InstallRequest) string {
 	filename := filepath.Base(req.LocalPath)
 	return m.submitJob("install", "Install: "+filename, func(ctx context.Context, emit jobs.EmitFn) error {
 		b, err := m.getBackend()
+		if err != nil {
+			return err
+		}
+		req, err = resolveInstallRequestCredential(req)
 		if err != nil {
 			return err
 		}
