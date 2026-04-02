@@ -30,13 +30,27 @@ function folderKey(path: string[]): string {
     return path.join(FOLDER_KEY_SEPARATOR);
 }
 
+function normalizeTreeLabel(value: string): string {
+    return value
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '');
+}
+
+function hasRedundantTopLevelFolder(vm: manager.VMInfo, segments: string[]): boolean {
+    if (segments.length !== 1) return false;
+
+    const folderName = normalizeTreeLabel(segments[0] || '');
+    const vmName = normalizeTreeLabel(vm.name || '');
+    return folderName !== '' && folderName === vmName;
+}
+
 function buildTree(vms: manager.VMInfo[]): VMFolderNode[] {
     const root = new Map<string, MutableVMFolderNode>();
     const rootVMs: manager.VMInfo[] = [];
 
     for (const vm of vms) {
         const segments = vm.pathSegments ?? [];
-        if (segments.length === 0) {
+        if (segments.length === 0 || hasRedundantTopLevelFolder(vm, segments)) {
             rootVMs.push(vm);
             continue;
         }

@@ -144,6 +144,24 @@ Long-running operations are tracked as jobs with:
 - dismiss for completed jobs
 - cancel for running command jobs
 
+## Performance Notes
+
+Recent tightening in the current codebase:
+- SSH-heavy compound flows reuse a single SSH connection and SFTP client instead of reconnecting for each step
+- Workstation inventory parsing, VMX parsing, and running-VM detection now use short-lived caches to cut repeated `vmrun` calls and filesystem work
+- VM power waits and vCenter guest-process waits use adaptive polling instead of fixed coarse polling
+- Run output is surfaced as soon as it is available; guest temp-file cleanup is now best-effort follow-up work instead of part of the user-visible critical path
+- vCenter config and network edit flows now read only the VM properties they actually need instead of loading a full VM detail snapshot
+- VM polling in the desktop UI is paused while the document is hidden to avoid background refresh churn
+
+Known hot paths and future optimization targets:
+- **Workstation Guest Ops command execution** is still the heaviest non-SSH run path because `vmrun` does not stream stdout/stderr directly; the current model still has to run the command, copy the output file back, and clean up guest artifacts
+- **SSH and vCenter command output capture** still buffer command output in memory before normalization (`CombinedOutput`, `io.ReadAll`); this is acceptable for normal output sizes, but it is still a clear future efficiency target
+- **VM browser refreshes** still rely on periodic `VMList` and selected-VM `VMGet` polling rather than event-driven invalidation, so large inventories can still make refresh cadence more noticeable
+- **vCenter network/inventory discovery** still performs broad object retrieval in some views and would benefit from more scoped caches if those screens become frequent heavy-use paths
+- **Config-backed metadata lists** for SSH keys, guest credentials, and stored scripts still rescan disk on each load; today this is small, but stat-based caches would be easy future cleanup
+- **Job log retention** is still fully in-memory until the user dismisses jobs, so very long sessions with extremely chatty jobs are still a memory-growth area
+
 ## Backend Comparison
 
 | Feature                  | vCenter | Workstation |

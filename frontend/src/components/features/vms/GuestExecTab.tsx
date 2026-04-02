@@ -18,12 +18,77 @@ interface Props {
 interface OutputEntry {
     output: string;
     status: 'running' | 'done' | 'failed' | 'cancelled';
+    statusLabel: string;
+    statusToneClass: string;
+    transportLabel: string;
+    sourceLabel: string;
+    summary: string;
+    metaLabel: string;
 }
 
 type ExecMode = 'raw' | 'script';
 
 function isWindowsGuest(guestOS: string): boolean {
     return guestOS.toLowerCase().includes('win');
+}
+
+function summarizeCommandText(commandText: string, fallback: string): string {
+    const lines = commandText
+        .split('\n')
+        .map(line => line.trim())
+        .filter(Boolean);
+    const summary = lines.find(line => !line.startsWith('#!')) || lines[0] || fallback;
+    const collapsed = summary.split(/\s+/).join(' ');
+    return collapsed.length > 96 ? `${collapsed.slice(0, 96).trimEnd()}…` : collapsed;
+}
+
+function formatRunClock(date: Date): string {
+    return date.toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+    });
+}
+
+function formatRunDuration(ms: number): string {
+    if (ms < 1_000) {
+        return `${ms} ms`;
+    }
+    if (ms < 60_000) {
+        return `${(ms / 1_000).toFixed(ms < 10_000 ? 1 : 0)}s`;
+    }
+
+    const totalSeconds = Math.round(ms / 1_000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+}
+
+function formatRunMeta(startedAt: Date, endedAt?: Date): string {
+    const parts = [`Started ${formatRunClock(startedAt)}`];
+    if (endedAt) {
+        parts.push(`Duration ${formatRunDuration(Math.max(0, endedAt.getTime() - startedAt.getTime()))}`);
+    }
+    return parts.join(' · ');
+}
+
+function describeResultStatus(
+    status: OutputEntry['status'],
+    finalMessage: string | undefined,
+): Pick<OutputEntry, 'statusLabel' | 'statusToneClass'> {
+    if (status === 'running') {
+        return { statusLabel: 'Running', statusToneClass: 'badge--yellow' };
+    }
+    if (status === 'cancelled') {
+        return { statusLabel: 'Cancelled', statusToneClass: 'badge--gray' };
+    }
+    if (status === 'failed') {
+        return { statusLabel: 'Failed', statusToneClass: 'badge--red' };
+    }
+    if ((finalMessage || '').includes('non-zero exit status')) {
+        return { statusLabel: 'Non-zero Exit', statusToneClass: 'badge--yellow' };
+    }
+    return { statusLabel: 'Completed', statusToneClass: 'badge--green' };
 }
 
 export default function GuestExecTab({ vm, onJobStarted, transport }: Props) {
@@ -148,7 +213,25 @@ export default function GuestExecTab({ vm, onJobStarted, transport }: Props) {
 
         setError('');
         setBusy(true);
-        setResult({ output: '', status: 'running' });
+        const startedAt = new Date();
+        const transportLabel = mode === 'ssh' ? 'SSH / Key' : 'Guest Ops';
+        const sourceLabel = execMode === 'raw'
+            ? 'Raw Command'
+            : (selectedScript?.filename ? `Stored Script · ${selectedScript.filename}` : 'Stored Script');
+        const summary = execMode === 'raw'
+            ? summarizeCommandText(commandText, 'Command')
+            : (selectedScript?.filename || summarizeCommandText(commandText, 'Stored Script'));
+        const runningStatus = describeResultStatus('running', '');
+        setResult({
+            output: '',
+            status: 'running',
+            statusLabel: runningStatus.statusLabel,
+            statusToneClass: runningStatus.statusToneClass,
+            transportLabel,
+            sourceLabel,
+            summary,
+            metaLabel: formatRunMeta(startedAt),
+        });
 
         try {
             let id: string;
@@ -161,16 +244,29 @@ export default function GuestExecTab({ vm, onJobStarted, transport }: Props) {
             onJobStarted(id, vm.name || vm.ref);
 
             watchTerminalJob(id, (job: any) => {
+                const finishedAt = new Date();
+                const displayStatus = describeResultStatus(job.status, job?.message);
+                const output = extractTerminalOutput(job);
+                const nextResult: OutputEntry = {
+                    output,
+                    status: job.status,
+                    statusLabel: displayStatus.statusLabel,
+                    statusToneClass: displayStatus.statusToneClass,
+                    transportLabel,
+                    sourceLabel,
+                    summary: typeof job?.label === 'string' && job.label.trim() ? job.label : summary,
+                    metaLabel: formatRunMeta(startedAt, finishedAt),
+                };
                 if (job.status === 'done') {
-                    setResult({ output: extractTerminalOutput(job), status: 'done' });
+                    setResult(nextResult);
                     setActiveJobId('');
                     setBusy(false);
                 } else if (job.status === 'failed') {
-                    setResult({ output: extractTerminalOutput(job), status: 'failed' });
+                    setResult(nextResult);
                     setActiveJobId('');
                     setBusy(false);
                 } else if (job.status === 'cancelled') {
-                    setResult({ output: extractTerminalOutput(job), status: 'cancelled' });
+                    setResult(nextResult);
                     setActiveJobId('');
                     setBusy(false);
                 }
@@ -336,6 +432,23 @@ export default function GuestExecTab({ vm, onJobStarted, transport }: Props) {
                 <div className="exec-shell-header">
                     <div className="exec-shell-meta">
                         <span className="exec-shell-title">Output</span>
+                        {result ? (
+                            <>
+                                <div className="exec-shell-facts">
+                                    <span className={`badge ${result.statusToneClass}`}>{result.statusLabel}</span>
+                                    <span className="exec-shell-fact">{result.transportLabel}</span>
+                                    <span className="exec-shell-fact">{result.sourceLabel}</span>
+                                    <span className="exec-shell-fact">{result.metaLabel}</span>
+                                </div>
+                                <span className="exec-shell-subtitle" title={result.summary}>
+                                    {result.summary}
+                                </span>
+                            </>
+                        ) : (
+                            <span className="exec-shell-subtitle">
+                                Separate shell sessions. Each run replaces the previous output.
+                            </span>
+                        )}
                     </div>
                     <button
                         className="btn-secondary"

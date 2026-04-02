@@ -86,18 +86,27 @@ func cleanupCommand(guestPath, guestOS string) string {
 	return fmt.Sprintf(`rm -f "%s"`, guestPath)
 }
 
-func bestEffortGuestCleanup(b GuestOpsBackend, req RunRequest) {
+type guestFileCleanupBackend interface {
+	DeleteGuestFile(ctx context.Context, vmRef, username, password, guestPath string) error
+}
+
+func bestEffortGuestCleanup(b GuestOpsBackend, req RunRequest, guestPath string) {
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+	if cleaner, ok := b.(guestFileCleanupBackend); ok {
+		_ = cleaner.DeleteGuestFile(cleanupCtx, req.VMRef, req.Username, req.Password, guestPath)
+		return
+	}
+
 	noop := func(_ int, _ string) {}
+	req.Command = cleanupCommand(guestPath, req.GuestOS)
 	_ = b.GuestRun(cleanupCtx, noop, req)
 }
 
-func bestEffortSSHCleanup(host, keyLabel, command string) {
+func bestEffortSSHCleanup(host, keyLabel, guestPath string) {
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	noop := func(_ int, _ string) {}
-	_ = sshtransport.Run(cleanupCtx, noop, host, keyLabel, command)
+	_ = sshtransport.Remove(cleanupCtx, host, keyLabel, guestPath)
 }
 
 // InstallCommandPreview derives the default install command the same way the
@@ -156,9 +165,8 @@ func (m *Manager) Install(req InstallRequest) string {
 			VMRef:    req.VMRef,
 			Username: req.Username,
 			Password: req.Password,
-			Command:  cleanupCommand(guestPath, req.GuestOS),
 			GuestOS:  req.GuestOS,
-		})
+		}, guestPath)
 
 		return runErr
 	})
@@ -179,17 +187,27 @@ func (m *Manager) SSHInstall(req SSHInstallRequest) string {
 			}
 		}
 
+		session, err := sshtransport.DialKey(ctx, emit, req.Host, req.KeyLabel)
+		if err != nil {
+			return err
+		}
+		defer session.Close()
+
 		emit(5, "Uploading installer...")
-		if err := sshtransport.Upload(ctx, emit, req.Host, req.KeyLabel, req.LocalPath, guestPath); err != nil {
+		if err := session.Upload(emit, req.LocalPath, guestPath); err != nil {
 			return fmt.Errorf("upload: %w", err)
 		}
 
 		emit(55, "Running installer...")
-		runErr := sshtransport.Run(ctx, emit, req.Host, req.KeyLabel, cmd)
+		runErr := session.Run(emit, cmd)
 
 		// Best-effort cleanup — ignore errors, suppress output. Use a fresh short-
 		// lived context so cleanup still runs after cancel/timeout/failure.
-		bestEffortSSHCleanup(req.Host, req.KeyLabel, cleanupCommand(guestPath, req.GuestOS))
+		if ctx.Err() == nil {
+			_ = session.Remove(guestPath)
+		} else {
+			bestEffortSSHCleanup(req.Host, req.KeyLabel, guestPath)
+		}
 
 		return runErr
 	})

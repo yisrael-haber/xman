@@ -191,10 +191,20 @@ func (b *Backend) ListVMNetworkOptions(ctx context.Context, vmRef string) ([]man
 
 func (b *Backend) UpdateVMNetwork(ctx context.Context, emit jobs.EmitFn, req manager.VMNetworkUpdateRequest) error {
 	emit(10, "Loading current VM network settings...")
-	info, err := b.GetVM(ctx, req.VMRef)
+	vm, obj, err := b.loadVMProperties(ctx, req.VMRef, []string{
+		"name",
+		"runtime.powerState",
+		"config.hardware.device",
+	})
 	if err != nil {
 		return err
 	}
+
+	var distributedPortgroupsByKey map[string]vCenterDistributedPortgroupRef
+	if obj.Config != nil && hasDistributedVCenterAdapter(obj.Config.Hardware.Device) {
+		distributedPortgroupsByKey, _ = b.distributedPortgroupsByKey(ctx)
+	}
+	info := toVMInfo(obj, nil, distributedPortgroupsByKey)
 	if info.PowerState != "poweredOff" {
 		return fmt.Errorf("VM network changes require the VM to be powered off")
 	}
@@ -219,11 +229,6 @@ func (b *Backend) UpdateVMNetwork(ctx context.Context, emit jobs.EmitFn, req man
 		return err
 	}
 
-	vm, err := b.vmObject(ctx, req.VMRef)
-	if err != nil {
-		return err
-	}
-
 	targetRef, err := parseVCenterNetworkOptionID(req.NetworkID)
 	if err != nil {
 		return err
@@ -240,11 +245,6 @@ func (b *Backend) UpdateVMNetwork(ctx context.Context, emit jobs.EmitFn, req man
 	}
 	if err != nil {
 		return fmt.Errorf("resolving network backing: %w", err)
-	}
-
-	var obj mo.VirtualMachine
-	if err := vm.Properties(ctx, vm.Reference(), []string{"config.hardware.device"}, &obj); err != nil {
-		return fmt.Errorf("reading VM devices: %w", err)
 	}
 
 	var targetDevice types.BaseVirtualDevice

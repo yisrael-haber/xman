@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"xman/internal/jobs"
 	"xman/internal/manager"
@@ -60,6 +61,36 @@ func TestBackendGetVMMissingReturnsError(t *testing.T) {
 	_, err := backend.GetVM(context.Background(), "/tmp/does-not-exist.vmx")
 	if err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("GetVM() error = %v, want not found", err)
+	}
+}
+
+func TestListVMsAndGetVMReuseRunningVMSetCache(t *testing.T) {
+	vmDir := t.TempDir()
+	vmxPath := writeTestVMX(t, vmDir, "cache-vm", "ubuntu-64", 2, 4096)
+
+	backend, _, logPath := newFakeVmrunBackend(t, vmDir, map[string]string{
+		"FAKE_VMRUN_LIST_OUTPUT": "Total running VMs: 1\n" + vmxPath + "\n",
+		"FAKE_VMRUN_TOOLS_STATE": "running",
+		"FAKE_VMRUN_GUEST_IP":    "192.168.50.20",
+	})
+
+	if err := os.WriteFile(logPath, nil, 0o600); err != nil {
+		t.Fatalf("WriteFile(%q) error = %v", logPath, err)
+	}
+
+	if _, err := backend.ListVMs(context.Background()); err != nil {
+		t.Fatalf("ListVMs() error = %v", err)
+	}
+	if _, err := backend.GetVM(context.Background(), vmxPath); err != nil {
+		t.Fatalf("GetVM() error = %v", err)
+	}
+
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", logPath, err)
+	}
+	if got := countLogLines(string(logData), "list"); got != 1 {
+		t.Fatalf("vmrun list count = %d, want %d\nfull log:\n%s", got, 1, string(logData))
 	}
 }
 
@@ -214,7 +245,7 @@ func TestUpdateVMConfigRejectsRunningWorkstationVM(t *testing.T) {
 	vmDir := t.TempDir()
 	vmxPath := writeTestVMX(t, vmDir, "config-live", "ubuntu-64", 2, 2048)
 
-	backend, _, _ := newFakeVmrunBackend(t, vmDir, map[string]string{
+	backend, _, logPath := newFakeVmrunBackend(t, vmDir, map[string]string{
 		"FAKE_VMRUN_LIST_OUTPUT": "Total running VMs: 1\n" + vmxPath + "\n",
 	})
 
@@ -228,6 +259,15 @@ func TestUpdateVMConfigRejectsRunningWorkstationVM(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "powered off") {
 		t.Fatalf("UpdateVMConfig() error = %v, want powered-off precondition", err)
+	}
+
+	logData, readErr := os.ReadFile(logPath)
+	if readErr != nil {
+		t.Fatalf("ReadFile(%q) error = %v", logPath, readErr)
+	}
+	logText := string(logData)
+	if strings.Contains(logText, "checkToolsState") || strings.Contains(logText, "getGuestIPAddress") {
+		t.Fatalf("UpdateVMConfig() unexpectedly ran deep guest queries\nfull log:\n%s", logText)
 	}
 }
 
@@ -375,6 +415,35 @@ func TestBackendGuestRunNonZeroReturnsNilAndEmitsOutput(t *testing.T) {
 	}
 }
 
+func TestBackendGuestRunReturnsBeforeCleanupFinishes(t *testing.T) {
+	vmDir := t.TempDir()
+	vmxPath := writeTestVMX(t, vmDir, "exec-fast", "ubuntu-64", 2, 2048)
+
+	backend, _, _ := newFakeVmrunBackend(t, vmDir, map[string]string{
+		"FAKE_VMRUN_LIST_OUTPUT":        "Total running VMs: 1\n" + vmxPath + "\n",
+		"FAKE_VMRUN_EXEC_OUTPUT":        "fast output\n",
+		"FAKE_VMRUN_CLEANUP_SLEEP_SECS": "0.9",
+	})
+
+	started := time.Now()
+	err := backend.GuestRun(context.Background(), noEmitWS, manager.RunRequest{
+		VMRef:    vmxPath,
+		GuestOS:  "ubuntu-64",
+		Username: "tester",
+		Password: "secret",
+		Command:  "echo quick",
+	})
+	elapsed := time.Since(started)
+	if err != nil {
+		t.Fatalf("GuestRun() error = %v", err)
+	}
+	if elapsed >= 600*time.Millisecond {
+		t.Fatalf("GuestRun() took %v, want it to finish before cleanup delay", elapsed)
+	}
+
+	time.Sleep(950 * time.Millisecond)
+}
+
 func TestBackendUploadDownloadAndInventoryCapability(t *testing.T) {
 	vmDir := t.TempDir()
 	vmxPath := writeTestVMX(t, vmDir, "transfer-vm", "ubuntu-64", 2, 2048)
@@ -502,6 +571,9 @@ case "$cmd" in
     fi
     ;;
   runProgramInGuest)
+    if [[ -n "${FAKE_VMRUN_CLEANUP_SLEEP_SECS:-}" && "${args[2]:-}" == "/bin/sh" && "${args[3]:-}" == "-c" && "${args[4]:-}" == rm\ -f* ]]; then
+      sleep "${FAKE_VMRUN_CLEANUP_SLEEP_SECS}"
+    fi
     if [[ "${FAKE_VMRUN_NONZERO_EXIT:-0}" == "1" ]]; then
       printf '%s\n' "${FAKE_VMRUN_NONZERO_EXIT_TEXT:-non-zero exit code}" >&2
       exit 1
@@ -555,3 +627,13 @@ func writeTestVMX(t *testing.T, rootDir, name, guestOS string, cpu, memoryMB int
 }
 
 func noEmitWS(int, string) {}
+
+func countLogLines(logText, want string) int {
+	count := 0
+	for _, line := range strings.Split(logText, "\n") {
+		if strings.TrimSpace(line) == want {
+			count++
+		}
+	}
+	return count
+}

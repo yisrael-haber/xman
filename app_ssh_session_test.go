@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"strconv"
+	"testing"
+
+	"xman/internal/sshtransport"
+)
 
 func TestSplitSSHHost(t *testing.T) {
 	tests := []struct {
@@ -22,18 +27,18 @@ func TestSplitSSHHost(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotHost, gotPort, err := splitSSHHost(tt.input)
+			got, err := sshtransport.ParseHost(tt.input, 22)
 			if tt.wantErr {
 				if err == nil {
-					t.Fatalf("splitSSHHost(%q) error = nil, want error", tt.input)
+					t.Fatalf("ParseHost(%q) error = nil, want error", tt.input)
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("splitSSHHost(%q) error = %v", tt.input, err)
+				t.Fatalf("ParseHost(%q) error = %v", tt.input, err)
 			}
-			if gotHost != tt.wantHost || gotPort != tt.wantPort {
-				t.Fatalf("splitSSHHost(%q) = (%q, %q), want (%q, %q)", tt.input, gotHost, gotPort, tt.wantHost, tt.wantPort)
+			if got.Host != tt.wantHost || strconv.Itoa(got.Port) != tt.wantPort {
+				t.Fatalf("ParseHost(%q) = (%q, %d), want (%q, %q)", tt.input, got.Host, got.Port, tt.wantHost, tt.wantPort)
 			}
 		})
 	}

@@ -1,18 +1,22 @@
 package executil
 
-import "strings"
+import "bytes"
 
 const maxOutputBytes = 50 * 1024 * 1024 // 50 MiB
 
 // NormalizeCapturedOutput trims command output, applies a size cap, and
 // returns a friendly placeholder when the command produced nothing.
 func NormalizeCapturedOutput(data []byte) string {
-	output := strings.TrimSpace(string(data))
-	if len(output) > maxOutputBytes {
-		output = output[:maxOutputBytes] + "\n[output truncated]"
-	}
-	if output == "" {
+	return normalizeCapturedOutput(data, maxOutputBytes)
+}
+
+func normalizeCapturedOutput(data []byte, limit int) string {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
 		return "(no output)"
 	}
-	return output
+	if len(trimmed) > limit {
+		return string(trimmed[:limit]) + "\n[output truncated]"
+	}
+	return string(trimmed)
 }

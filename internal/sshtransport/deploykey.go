@@ -6,8 +6,6 @@ import (
 	"strings"
 
 	"xman/internal/jobs"
-
-	"github.com/pkg/sftp"
 )
 
 // DeployKey uploads the public key to the guest VM over SFTP, then runs a
@@ -24,7 +22,7 @@ func DeployKey(ctx context.Context, emit jobs.EmitFn, host string, port int, use
 	defer close(done)
 	go cancelOnContext(ctx, client, done)
 
-	sc, err := sftp.NewClient(client)
+	sc, err := newSFTPClient(client)
 	if err != nil {
 		return fmt.Errorf("SFTP client: %w", err)
 	}

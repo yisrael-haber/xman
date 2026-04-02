@@ -72,6 +72,11 @@ function readStoredBrowserWidth(): number {
     return Number.isFinite(raw) ? raw : VM_BROWSER_DEFAULT_WIDTH;
 }
 
+function isDocumentVisible(): boolean {
+    if (typeof document === 'undefined') return true;
+    return document.visibilityState !== 'hidden';
+}
+
 function clampBrowserWidth(width: number, panelWidth: number): number {
     const minWidth = panelWidth > 0
         ? Math.min(VM_BROWSER_MIN_WIDTH, Math.max(180, panelWidth - VM_DETAIL_MIN_WIDTH))
@@ -164,10 +169,11 @@ export default function VMPanel({ onJobStarted, toolsInstall, guestOps, console,
     const [browserWidth, setBrowserWidth] = useState(() => readStoredBrowserWidth());
     const [panelWidth, setPanelWidth] = useState(0);
     const [isResizingBrowser, setIsResizingBrowser] = useState(false);
+    const [documentVisible, setDocumentVisible] = useState(() => isDocumentVisible());
     const panelRef = useRef<HTMLDivElement | null>(null);
     const refreshing = useRef(false);
     const queuedRefresh = useRef<boolean | null>(null);
-    const selectedRefreshRef = useRef(0);
+    const selectedRefreshes = useRef(new Map<string, { token: symbol; promise: Promise<void> }>());
     const browserResizeStartRef = useRef<{ startX: number; startWidth: number } | null>(null);
     const effectiveBrowserWidth = clampBrowserWidth(browserWidth, panelWidth);
     const minBrowserWidth = clampBrowserWidth(VM_BROWSER_MIN_WIDTH, panelWidth);
@@ -276,15 +282,26 @@ export default function VMPanel({ onJobStarted, toolsInstall, guestOps, console,
     }
 
     async function refreshSelectedVM(vmRef: string) {
-        const token = ++selectedRefreshRef.current;
-        try {
-            const vm = await VMGet(vmRef);
-            if (selectedRefreshRef.current !== token) return;
-            setVms(prev => prev.map(entry => entry.ref === vmRef ? mergeVMInfo(entry, vm) : entry));
-            setSelected(prev => prev?.ref === vmRef ? mergeVMInfo(prev, vm) : prev);
-        } catch {
-            // Keep the lighter list data if the targeted detail refresh fails.
-        }
+        const active = selectedRefreshes.current.get(vmRef);
+        if (active) return active.promise;
+
+        const token = Symbol(vmRef);
+        const refreshPromise = (async () => {
+            try {
+                const vm = await VMGet(vmRef);
+                setVms(prev => prev.map(entry => entry.ref === vmRef ? mergeVMInfo(entry, vm) : entry));
+                setSelected(prev => prev?.ref === vmRef ? mergeVMInfo(prev, vm) : prev);
+            } catch {
+                // Keep the lighter list data if the targeted detail refresh fails.
+            } finally {
+                if (selectedRefreshes.current.get(vmRef)?.token === token) {
+                    selectedRefreshes.current.delete(vmRef);
+                }
+            }
+        })();
+
+        selectedRefreshes.current.set(vmRef, { token, promise: refreshPromise });
+        return refreshPromise;
     }
 
     useEffect(() => {
@@ -292,6 +309,22 @@ export default function VMPanel({ onJobStarted, toolsInstall, guestOps, console,
             window.localStorage.setItem(VM_BROWSER_WIDTH_STORAGE_KEY, String(browserWidth));
         }
     }, [browserWidth]);
+
+    useEffect(() => {
+        if (typeof document === 'undefined') return;
+
+        const handleVisibilityChange = () => {
+            setDocumentVisible(isDocumentVisible());
+        };
+
+        handleVisibilityChange();
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+        return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+    }, []);
+
+    useEffect(() => () => {
+        selectedRefreshes.current.clear();
+    }, []);
 
     useEffect(() => {
         const element = panelRef.current;
@@ -338,9 +371,15 @@ export default function VMPanel({ onJobStarted, toolsInstall, guestOps, console,
 
     useEffect(() => {
         void loadVMs();
+    }, []);
+
+    useEffect(() => {
+        if (!documentVisible) return;
+
+        void loadVMs(true);
         const id = setInterval(() => loadVMs(true), 5_000);
         return () => clearInterval(id);
-    }, []);
+    }, [documentVisible]);
 
     useEffect(() => {
         if (!selected?.ref) return;
@@ -354,12 +393,13 @@ export default function VMPanel({ onJobStarted, toolsInstall, guestOps, console,
     }, [backendType, selected?.ref, selected?.powerState]);
 
     useEffect(() => {
+        if (!documentVisible) return;
         if (!selected?.ref || selected.powerState !== 'poweredOn' || selected.guestOpsReady) return;
         const id = setInterval(() => {
             void refreshSelectedVM(selected.ref);
         }, 2_000);
         return () => clearInterval(id);
-    }, [selected?.ref, selected?.powerState, selected?.guestOpsReady]);
+    }, [documentVisible, selected?.ref, selected?.powerState, selected?.guestOpsReady]);
 
     const visibleTabs = ALL_TABS.filter(tab =>
         (!tab.requiresGuestOps || guestOps) &&

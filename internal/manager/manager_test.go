@@ -36,6 +36,7 @@ type fakeBackend struct {
 	uploadFunc          func(context.Context, jobs.EmitFn, UploadRequest) error
 	downloadFunc        func(context.Context, jobs.EmitFn, DownloadRequest) error
 	guestRunFunc        func(context.Context, jobs.EmitFn, RunRequest) error
+	deleteGuestFileFunc func(context.Context, string, string, string, string) error
 	listHostsFunc       func(context.Context) ([]HostInfo, error)
 	listDatastoresFunc  func(context.Context) ([]DatastoreInfo, error)
 	listNetworksFunc    func(context.Context) (NetworkSummary, error)
@@ -146,6 +147,12 @@ func (b *fakeBackend) Download(ctx context.Context, emit jobs.EmitFn, req Downlo
 func (b *fakeBackend) GuestRun(ctx context.Context, emit jobs.EmitFn, req RunRequest) error {
 	if b.guestRunFunc != nil {
 		return b.guestRunFunc(ctx, emit, req)
+	}
+	return nil
+}
+func (b *fakeBackend) DeleteGuestFile(ctx context.Context, vmRef, username, password, guestPath string) error {
+	if b.deleteGuestFileFunc != nil {
+		return b.deleteGuestFileFunc(ctx, vmRef, username, password, guestPath)
 	}
 	return nil
 }
@@ -402,7 +409,7 @@ func TestVMPowerOffWaitsForObservedStateBeforeJobCompletes(t *testing.T) {
 
 	var mu sync.Mutex
 	powerOffCalls := 0
-	listCallsAfterPowerOff := 0
+	getCallsAfterPowerOff := 0
 	backend := &fakeBackend{
 		backendType: "workstation",
 		displayName: "Local Workstation",
@@ -412,21 +419,21 @@ func TestVMPowerOffWaitsForObservedStateBeforeJobCompletes(t *testing.T) {
 			powerOffCalls++
 			return nil
 		},
-		listVMsFunc: func(context.Context) ([]VMInfo, error) {
+		getVMFunc: func(context.Context, string) (VMInfo, error) {
 			mu.Lock()
 			defer mu.Unlock()
 			state := "poweredOn"
 			if powerOffCalls > 0 {
-				listCallsAfterPowerOff++
-				if listCallsAfterPowerOff >= 2 {
+				getCallsAfterPowerOff++
+				if getCallsAfterPowerOff >= 2 {
 					state = "poweredOff"
 				}
 			}
-			return []VMInfo{{
+			return VMInfo{
 				Ref:        "vm-1",
 				Name:       "vm-1",
 				PowerState: state,
-			}}, nil
+			}, nil
 		},
 	}
 	m.ReplaceBackend(context.Background(), backend)
@@ -440,8 +447,8 @@ func TestVMPowerOffWaitsForObservedStateBeforeJobCompletes(t *testing.T) {
 	if powerOffCalls != 1 {
 		t.Fatalf("PowerOff call count = %d, want %d", powerOffCalls, 1)
 	}
-	if listCallsAfterPowerOff < 2 {
-		t.Fatalf("ListVMs after PowerOff called %d times, want at least %d to prove wait loop ran", listCallsAfterPowerOff, 2)
+	if getCallsAfterPowerOff < 2 {
+		t.Fatalf("GetVM after PowerOff called %d times, want at least %d to prove wait loop ran", getCallsAfterPowerOff, 2)
 	}
 
 	var sawWaiting, sawComplete bool
@@ -674,6 +681,7 @@ func TestInstallAutoCommandUploadsRunsAndCleansUp(t *testing.T) {
 
 	var uploads []UploadRequest
 	var guestRuns []RunRequest
+	var deletedGuestPaths []string
 	backend := &fakeBackend{
 		backendType: "workstation",
 		displayName: "Local Workstation",
@@ -684,10 +692,11 @@ func TestInstallAutoCommandUploadsRunsAndCleansUp(t *testing.T) {
 		},
 		guestRunFunc: func(ctx context.Context, emit jobs.EmitFn, req RunRequest) error {
 			guestRuns = append(guestRuns, req)
-			if strings.HasPrefix(req.Command, "rm -f ") {
-				return nil
-			}
 			emit(100, "Command completed.")
+			return nil
+		},
+		deleteGuestFileFunc: func(ctx context.Context, vmRef, username, password, guestPath string) error {
+			deletedGuestPaths = append(deletedGuestPaths, guestPath)
 			return nil
 		},
 	}
@@ -714,14 +723,14 @@ func TestInstallAutoCommandUploadsRunsAndCleansUp(t *testing.T) {
 	if uploads[0].GuestPath != "/tmp/agent.deb" {
 		t.Fatalf("upload guest path = %q, want %q", uploads[0].GuestPath, "/tmp/agent.deb")
 	}
-	if len(guestRuns) != 2 {
-		t.Fatalf("guest run calls = %d, want install + cleanup", len(guestRuns))
+	if len(guestRuns) != 1 {
+		t.Fatalf("guest run calls = %d, want %d install run", len(guestRuns), 1)
 	}
 	if !strings.Contains(guestRuns[0].Command, `dpkg -i "/tmp/agent.deb"`) {
 		t.Fatalf("install command = %q, want deb install command", guestRuns[0].Command)
 	}
-	if guestRuns[1].Command != `rm -f "/tmp/agent.deb"` {
-		t.Fatalf("cleanup command = %q, want %q", guestRuns[1].Command, `rm -f "/tmp/agent.deb"`)
+	if len(deletedGuestPaths) != 1 || deletedGuestPaths[0] != "/tmp/agent.deb" {
+		t.Fatalf("deleted guest paths = %v, want [%q]", deletedGuestPaths, "/tmp/agent.deb")
 	}
 }
 
@@ -808,6 +817,7 @@ func TestInstallCancellationStillRunsBestEffortCleanup(t *testing.T) {
 	m := New(jm)
 
 	var guestRunCommands []string
+	var deletedGuestPaths []string
 	cleanupCalled := make(chan struct{}, 1)
 	backend := &fakeBackend{
 		backendType: "workstation",
@@ -817,15 +827,16 @@ func TestInstallCancellationStillRunsBestEffortCleanup(t *testing.T) {
 		},
 		guestRunFunc: func(ctx context.Context, emit jobs.EmitFn, req RunRequest) error {
 			guestRunCommands = append(guestRunCommands, req.Command)
-			if strings.HasPrefix(req.Command, "rm -f ") {
-				if ctx.Err() != nil {
-					t.Fatalf("cleanup ran with cancelled context: %v", ctx.Err())
-				}
-				cleanupCalled <- struct{}{}
-				return nil
-			}
 			<-ctx.Done()
 			return ctx.Err()
+		},
+		deleteGuestFileFunc: func(ctx context.Context, vmRef, username, password, guestPath string) error {
+			if ctx.Err() != nil {
+				t.Fatalf("cleanup ran with cancelled context: %v", ctx.Err())
+			}
+			deletedGuestPaths = append(deletedGuestPaths, guestPath)
+			cleanupCalled <- struct{}{}
+			return nil
 		},
 	}
 	m.ReplaceBackend(context.Background(), backend)
@@ -849,6 +860,9 @@ func TestInstallCancellationStillRunsBestEffortCleanup(t *testing.T) {
 	case <-cleanupCalled:
 	case <-time.After(500 * time.Millisecond):
 		t.Fatalf("cleanup was not called after cancellation; guestRunCommands=%v", guestRunCommands)
+	}
+	if len(deletedGuestPaths) != 1 || deletedGuestPaths[0] != "/tmp/agent.deb" {
+		t.Fatalf("deleted guest paths = %v, want [%q]", deletedGuestPaths, "/tmp/agent.deb")
 	}
 }
 

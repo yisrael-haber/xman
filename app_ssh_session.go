@@ -2,13 +2,13 @@ package main
 
 import (
 	"fmt"
-	"net"
 	"os/exec"
 	goRuntime "runtime"
 	"strconv"
 	"strings"
 
 	"xman/internal/config"
+	"xman/internal/sshtransport"
 )
 
 // LaunchInteractiveSSHSession opens the native OS terminal and starts the
@@ -22,7 +22,7 @@ func (a *App) LaunchInteractiveSSHSession(host, keyLabel string) error {
 		return fmt.Errorf("key %q has no default user; set one in SSH Keys before launching an interactive session", keyLabel)
 	}
 
-	hostPart, port, err := splitSSHHost(host)
+	target, err := sshtransport.ParseHost(host, 22)
 	if err != nil {
 		return err
 	}
@@ -35,10 +35,10 @@ func (a *App) LaunchInteractiveSSHSession(host, keyLabel string) error {
 		"-o", "PasswordAuthentication=no",
 		"-o", "KbdInteractiveAuthentication=no",
 	}
-	if port != "" && port != "22" {
-		sshArgs = append(sshArgs, "-p", port)
+	if target.Port != 22 {
+		sshArgs = append(sshArgs, "-p", strconv.Itoa(target.Port))
 	}
-	sshArgs = append(sshArgs, meta.DefaultUser+"@"+hostPart)
+	sshArgs = append(sshArgs, meta.DefaultUser+"@"+target.Host)
 
 	cmd, err := nativeTerminalCommand(sshArgs)
 	if err != nil {
@@ -48,60 +48,6 @@ func (a *App) LaunchInteractiveSSHSession(host, keyLabel string) error {
 		return fmt.Errorf("launching interactive SSH session: %w", err)
 	}
 	_ = cmd.Process.Release()
-	return nil
-}
-
-func splitSSHHost(host string) (string, string, error) {
-	host = strings.TrimSpace(host)
-	if host == "" {
-		return "", "", fmt.Errorf("host is required")
-	}
-
-	if strings.HasPrefix(host, "[") {
-		if parsedHost, parsedPort, err := net.SplitHostPort(host); err == nil {
-			if err := validateSSHPort(parsedPort, host); err != nil {
-				return "", "", err
-			}
-			return parsedHost, parsedPort, nil
-		}
-		if strings.HasSuffix(host, "]") {
-			return strings.TrimSuffix(strings.TrimPrefix(host, "["), "]"), "22", nil
-		}
-		return "", "", fmt.Errorf("invalid host %q", host)
-	}
-
-	if parsedHost, parsedPort, err := net.SplitHostPort(host); err == nil {
-		if err := validateSSHPort(parsedPort, host); err != nil {
-			return "", "", err
-		}
-		return parsedHost, parsedPort, nil
-	}
-
-	if strings.Count(host, ":") == 1 {
-		hostPart, portPart, _ := strings.Cut(host, ":")
-		if hostPart == "" {
-			return "", "", fmt.Errorf("host is required")
-		}
-		if err := validateSSHPort(portPart, host); err != nil {
-			return "", "", err
-		}
-		return hostPart, portPart, nil
-	}
-
-	if strings.Count(host, ":") > 1 {
-		if ip := net.ParseIP(host); ip == nil {
-			return "", "", fmt.Errorf("invalid host %q", host)
-		}
-	}
-
-	return host, "22", nil
-}
-
-func validateSSHPort(port, host string) error {
-	portNum, err := strconv.Atoi(port)
-	if err != nil || portNum < 1 || portNum > 65535 {
-		return fmt.Errorf("invalid port in host %q", host)
-	}
 	return nil
 }
 

@@ -428,13 +428,7 @@ func (b *Backend) vmObject(ctx context.Context, vmRef string) (*object.VirtualMa
 }
 
 func (b *Backend) GetVM(ctx context.Context, vmRef string) (manager.VMInfo, error) {
-	vm, err := b.vmObject(ctx, vmRef)
-	if err != nil {
-		return manager.VMInfo{}, err
-	}
-
-	var obj mo.VirtualMachine
-	if err := vm.Properties(ctx, vm.Reference(), []string{
+	_, obj, err := b.loadVMProperties(ctx, vmRef, []string{
 		"name",
 		"config.name", "config.guestFullName",
 		"config.hardware.numCPU", "config.hardware.memoryMB",
@@ -444,8 +438,9 @@ func (b *Backend) GetVM(ctx context.Context, vmRef string) (manager.VMInfo, erro
 		"guest.toolsStatus", "guest.guestOperationsReady", "guest.ipAddress", "guest.hostName", "guest.net",
 		"datastore",
 		"parent", "parentVApp",
-	}, &obj); err != nil {
-		return manager.VMInfo{}, fmt.Errorf("reading VM properties: %w", err)
+	})
+	if err != nil {
+		return manager.VMInfo{}, err
 	}
 
 	client, err := b.session.Client()
@@ -477,12 +472,34 @@ func (b *Backend) GetVM(ctx context.Context, vmRef string) (manager.VMInfo, erro
 	return info, nil
 }
 
+func (b *Backend) loadVMProperties(ctx context.Context, vmRef string, props []string) (*object.VirtualMachine, mo.VirtualMachine, error) {
+	vm, err := b.vmObject(ctx, vmRef)
+	if err != nil {
+		return nil, mo.VirtualMachine{}, err
+	}
+
+	var obj mo.VirtualMachine
+	if err := vm.Properties(ctx, vm.Reference(), props, &obj); err != nil {
+		return nil, mo.VirtualMachine{}, fmt.Errorf("reading VM properties: %w", err)
+	}
+	return vm, obj, nil
+}
+
 func (b *Backend) UpdateVMConfig(ctx context.Context, emit jobs.EmitFn, req manager.VMConfigUpdateRequest) error {
 	emit(10, "Loading current VM configuration...")
-	info, err := b.GetVM(ctx, req.VMRef)
+	vm, obj, err := b.loadVMProperties(ctx, req.VMRef, []string{
+		"name",
+		"config.name",
+		"config.annotation",
+		"config.hardware.numCPU",
+		"config.hardware.memoryMB",
+		"config.firmware",
+		"runtime.powerState",
+	})
 	if err != nil {
 		return err
 	}
+	info := toVMInfo(obj, nil, nil)
 
 	nextName := strings.TrimSpace(req.Name)
 	nextNotes := strings.TrimSpace(req.Notes)
@@ -500,11 +517,6 @@ func (b *Backend) UpdateVMConfig(ctx context.Context, emit jobs.EmitFn, req mana
 	if !renameNeeded && !notesChanged && !hardwareChanged {
 		emit(100, "Configuration already matches the requested values.")
 		return nil
-	}
-
-	vm, err := b.vmObject(ctx, req.VMRef)
-	if err != nil {
-		return err
 	}
 
 	if renameNeeded {
@@ -910,6 +922,7 @@ func (b *Backend) GuestRun(ctx context.Context, emit jobs.EmitFn, req manager.Ru
 	if err != nil {
 		return err
 	}
+	defer deleteGuestFileAsync(tools, outPath)
 
 	output := executil.NormalizeCapturedOutput(data)
 	if exitCode != 0 {
@@ -919,6 +932,17 @@ func (b *Backend) GuestRun(ctx context.Context, emit jobs.EmitFn, req manager.Ru
 	}
 	emit(95, output)
 	emit(100, "Command completed.")
+	return nil
+}
+
+func (b *Backend) DeleteGuestFile(ctx context.Context, vmRef, username, password, guestPath string) error {
+	tools, err := b.newToolboxClient(ctx, vmRef, username, password)
+	if err != nil {
+		return err
+	}
+	if err := tools.FileManager.DeleteFile(ctx, tools.Authentication, guestPath); err != nil {
+		return wrapGuestOpsError("deleting guest file", err)
+	}
 	return nil
 }
 
@@ -956,8 +980,35 @@ func buildGuestRunSpec(req manager.RunRequest) (types.GuestProgramSpec, string) 
 	}, outPath
 }
 
+func guestProcessPollInterval(elapsed time.Duration) time.Duration {
+	switch {
+	case elapsed < 2*time.Second:
+		return 250 * time.Millisecond
+	case elapsed < 10*time.Second:
+		return 500 * time.Millisecond
+	case elapsed < 30*time.Second:
+		return time.Second
+	default:
+		return 2 * time.Second
+	}
+}
+
+func guestProcessProgressInterval(elapsed time.Duration) time.Duration {
+	switch {
+	case elapsed < 10*time.Second:
+		return 2 * time.Second
+	case elapsed < time.Minute:
+		return 5 * time.Second
+	default:
+		return 10 * time.Second
+	}
+}
+
 func waitForGuestProcess(ctx context.Context, emit jobs.EmitFn, tools *toolbox.Client, pid int64) (int32, error) {
-	deadline := time.Now().Add(5 * time.Minute)
+	started := time.Now()
+	deadline := started.Add(5 * time.Minute)
+	nextProgress := started
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -978,8 +1029,21 @@ func waitForGuestProcess(ctx context.Context, emit jobs.EmitFn, tools *toolbox.C
 			return -1, fmt.Errorf("timed out waiting for command to finish")
 		}
 
-		emit(50, "Waiting for command to finish...")
-		time.Sleep(1 * time.Second)
+		now := time.Now()
+		elapsed := now.Sub(started)
+		if !now.Before(nextProgress) {
+			emit(50, "Waiting for command to finish...")
+			nextProgress = now.Add(guestProcessProgressInterval(elapsed))
+		}
+
+		timer := time.NewTimer(guestProcessPollInterval(elapsed))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			terminateGuestProcess(tools, pid)
+			return -1, ctx.Err()
+		case <-timer.C:
+		}
 	}
 }
 
@@ -993,7 +1057,6 @@ func downloadGuestFile(ctx context.Context, tools *toolbox.Client, guestPath str
 			defer src.Close()
 			data, readErr := io.ReadAll(src)
 			if readErr == nil {
-				_ = tools.FileManager.DeleteFile(ctx, tools.Authentication, guestPath)
 				return data, nil
 			}
 			lastErr = fmt.Errorf("reading output: %w", readErr)
@@ -1009,6 +1072,18 @@ func downloadGuestFile(ctx context.Context, tools *toolbox.Client, guestPath str
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+}
+
+func deleteGuestFileAsync(tools *toolbox.Client, guestPath string) {
+	if strings.TrimSpace(guestPath) == "" {
+		return
+	}
+
+	go func(path string) {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_ = tools.FileManager.DeleteFile(cleanupCtx, tools.Authentication, path)
+	}(guestPath)
 }
 
 func terminateGuestProcess(tools *toolbox.Client, pid int64) {

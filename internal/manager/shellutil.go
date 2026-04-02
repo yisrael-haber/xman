@@ -95,7 +95,12 @@ func winPSCmdScript(cmdLine, outPath, pidPath string) string {
 			"    cmd /c '" + safeCmd + "' 2>&1 | Out-File -FilePath '" + safeOut + "' -Encoding UTF8 -Force\n" +
 			"} catch {\n" +
 			"    \"ERROR: $_\" | Out-File -FilePath '" + safeOut + "' -Encoding UTF8 -Force\n" +
-			"}\n" +
+			"} finally {\n"
+	if safePID != "" {
+		script += "    Remove-Item -Path '" + safePID + "' -ErrorAction SilentlyContinue\n"
+	}
+	script +=
+		"}\n" +
 			"exit $LASTEXITCODE"
 	return script
 }

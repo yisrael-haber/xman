@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
@@ -13,6 +14,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -23,6 +26,18 @@ type KeyMeta struct {
 	Algorithm   string `json:"algorithm"`
 	DefaultUser string `json:"defaultUser"`
 	PublicKey   string `json:"publicKey"`
+}
+
+type signerCacheEntry struct {
+	path    string
+	modTime time.Time
+	size    int64
+	signer  ssh.Signer
+}
+
+var signerCache struct {
+	mu      sync.RWMutex
+	entries map[string]signerCacheEntry
 }
 
 func sshKeysDir() (string, error) {
@@ -62,31 +77,90 @@ func marshalOpenSSHPrivateKey(key any, comment string) ([]byte, error) {
 	return pem.EncodeToMemory(block), nil
 }
 
-func ensureNativeCompatiblePrivateKey(path, label string) error {
+func loadNativeCompatiblePrivateKey(path, label string) ([]byte, error) {
 	privBytes, err := os.ReadFile(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	if strings.Contains(string(privBytes), "BEGIN OPENSSH PRIVATE KEY") {
-		return nil
+	if bytes.Contains(privBytes, []byte("BEGIN OPENSSH PRIVATE KEY")) {
+		return privBytes, nil
 	}
 
 	rawKey, err := ssh.ParseRawPrivateKey(privBytes)
 	if err != nil {
-		return fmt.Errorf("parsing legacy private key for %q: %w", label, err)
+		return nil, fmt.Errorf("parsing legacy private key for %q: %w", label, err)
 	}
 
 	rewritten, err := marshalOpenSSHPrivateKey(rawKey, "xman:"+label)
 	if err != nil {
-		return fmt.Errorf("rewriting private key for %q to OpenSSH format: %w", label, err)
+		return nil, fmt.Errorf("rewriting private key for %q to OpenSSH format: %w", label, err)
 	}
 
 	if err := os.WriteFile(path, rewritten, 0o600); err != nil {
-		return fmt.Errorf("writing upgraded private key for %q: %w", label, err)
+		return nil, fmt.Errorf("writing upgraded private key for %q: %w", label, err)
 	}
 
-	return nil
+	return rewritten, nil
+}
+
+func ensureNativeCompatiblePrivateKey(path, label string) error {
+	_, err := loadNativeCompatiblePrivateKey(path, label)
+	return err
+}
+
+func cachedSigner(label, path string, info os.FileInfo) (ssh.Signer, bool) {
+	signerCache.mu.RLock()
+	defer signerCache.mu.RUnlock()
+
+	entry, ok := signerCache.entries[label]
+	if !ok {
+		return nil, false
+	}
+	if entry.path != path || entry.modTime != info.ModTime() || entry.size != info.Size() {
+		return nil, false
+	}
+	return entry.signer, true
+}
+
+func storeCachedSigner(label, path string, info os.FileInfo, signer ssh.Signer) {
+	signerCache.mu.Lock()
+	defer signerCache.mu.Unlock()
+
+	if signerCache.entries == nil {
+		signerCache.entries = make(map[string]signerCacheEntry)
+	}
+	signerCache.entries[label] = signerCacheEntry{
+		path:    path,
+		modTime: info.ModTime(),
+		size:    info.Size(),
+		signer:  signer,
+	}
+}
+
+func invalidateCachedSigner(label string) {
+	signerCache.mu.Lock()
+	defer signerCache.mu.Unlock()
+	delete(signerCache.entries, label)
+}
+
+func privateKeyInfo(meta KeyMeta) (string, os.FileInfo, error) {
+	dir, err := keyLabelDir(meta.Label)
+	if err != nil {
+		return "", nil, err
+	}
+
+	filename := privateKeyFilename(meta.Algorithm)
+	if filename == "" {
+		return "", nil, fmt.Errorf("key %q uses unsupported algorithm %q", meta.Label, meta.Algorithm)
+	}
+
+	path := filepath.Join(dir, filename)
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", nil, fmt.Errorf("private key for %q not found: %w", meta.Label, err)
+	}
+	return path, info, nil
 }
 
 // CreateKeyPair generates a new SSH key pair and stores it on disk under
@@ -200,6 +274,7 @@ func CreateKeyPair(label, algorithm, defaultUser string) (KeyMeta, error) {
 		_ = os.WriteFile(filepath.Join(dir, "meta.json"), metaJSON, 0o600)
 	}
 
+	invalidateCachedSigner(meta.Label)
 	return meta, nil
 }
 
@@ -263,35 +338,28 @@ func LoadKeySigner(label string) (KeyMeta, ssh.Signer, error) {
 		return KeyMeta{}, nil, err
 	}
 
-	dir, err := keyLabelDir(label)
+	path, info, err := privateKeyInfo(meta)
 	if err != nil {
 		return KeyMeta{}, nil, err
 	}
 
-	filename := privateKeyFilename(meta.Algorithm)
-	if filename == "" {
-		return KeyMeta{}, nil, fmt.Errorf("key %q uses unsupported algorithm %q", label, meta.Algorithm)
+	if signer, ok := cachedSigner(label, path, info); ok {
+		return meta, signer, nil
 	}
 
-	privPEM, err := os.ReadFile(filepath.Join(dir, filename))
+	privPEM, err := loadNativeCompatiblePrivateKey(path, label)
 	if err != nil {
-		return KeyMeta{}, nil, fmt.Errorf("reading private key for %q: %w", label, err)
-	}
-
-	if err := ensureNativeCompatiblePrivateKey(filepath.Join(dir, filename), label); err != nil {
 		return KeyMeta{}, nil, err
 	}
-
-	privPEM, err = os.ReadFile(filepath.Join(dir, filename))
-	if err != nil {
-		return KeyMeta{}, nil, fmt.Errorf("reading private key for %q after upgrade: %w", label, err)
-	}
-
 	signer, err := ssh.ParsePrivateKey(privPEM)
 	if err != nil {
 		return KeyMeta{}, nil, fmt.Errorf("parsing private key for %q: %w", label, err)
 	}
 
+	if refreshedInfo, statErr := os.Stat(path); statErr == nil {
+		info = refreshedInfo
+	}
+	storeCachedSigner(label, path, info, signer)
 	return meta, signer, nil
 }
 
@@ -304,19 +372,9 @@ func PrivateKeyPath(label string) (KeyMeta, string, error) {
 		return KeyMeta{}, "", err
 	}
 
-	dir, err := keyLabelDir(label)
+	path, _, err := privateKeyInfo(meta)
 	if err != nil {
 		return KeyMeta{}, "", err
-	}
-
-	filename := privateKeyFilename(meta.Algorithm)
-	if filename == "" {
-		return KeyMeta{}, "", fmt.Errorf("key %q uses unsupported algorithm %q", label, meta.Algorithm)
-	}
-
-	path := filepath.Join(dir, filename)
-	if _, err := os.Stat(path); err != nil {
-		return KeyMeta{}, "", fmt.Errorf("private key for %q not found: %w", label, err)
 	}
 
 	if err := ensureNativeCompatiblePrivateKey(path, label); err != nil {
@@ -349,6 +407,7 @@ func UpdateKeyDefaultUser(label, defaultUser string) (KeyMeta, error) {
 		return KeyMeta{}, err
 	}
 
+	invalidateCachedSigner(label)
 	return meta, nil
 }
 
@@ -361,5 +420,6 @@ func DeleteKey(label string) error {
 	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("key %q not found", label)
 	}
+	invalidateCachedSigner(label)
 	return os.RemoveAll(dir)
 }

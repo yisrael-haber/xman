@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { manager } from '../../wailsjs/go/models';
 import useSSHKeys from './useSSHKeys';
 import useGuestCredentials from './useGuestCredentials';
@@ -8,13 +8,22 @@ export type VMTransportMode = 'vmware' | 'ssh';
 export default function useVMTransport(vm: manager.VMInfo, initialMode: VMTransportMode = 'vmware') {
     const [mode, setMode] = useState<VMTransportMode>(initialMode);
     const [credentialLabel, setCredentialLabel] = useState('');
-    const [sshHost, setSshHost] = useState(vm.ipAddress || '');
+    const [sshHost, setSshHostState] = useState(vm.ipAddress || '');
     const [keyLabel, setKeyLabel] = useState('');
     const { keys, error: keysError } = useSSHKeys();
     const { credentials, error: credentialsError } = useGuestCredentials();
+    const previousVMRef = useRef(vm.ref);
+    const sshHostTouchedRef = useRef(false);
 
     useEffect(() => {
-        setSshHost(vm.ipAddress || '');
+        const switchingVM = previousVMRef.current !== vm.ref;
+        previousVMRef.current = vm.ref;
+        if (switchingVM) {
+            sshHostTouchedRef.current = false;
+        }
+        if (!sshHostTouchedRef.current) {
+            setSshHostState(vm.ipAddress || '');
+        }
     }, [vm.ref, vm.ipAddress]);
 
     useEffect(() => {
@@ -39,6 +48,11 @@ export default function useVMTransport(vm: manager.VMInfo, initialMode: VMTransp
 
     const selectedKey = keys.find(key => key.label === keyLabel);
     const sshUser = selectedKey?.defaultUser?.trim() || '';
+
+    function setSshHost(nextHost: string) {
+        sshHostTouchedRef.current = nextHost.trim() !== (vm.ipAddress || '').trim();
+        setSshHostState(nextHost);
+    }
 
     return {
         mode,

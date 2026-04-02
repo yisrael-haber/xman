@@ -1153,6 +1153,34 @@
     text-transform: uppercase;
 }
 
+.exec-shell-facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    align-items: center;
+}
+
+.exec-shell-fact,
+.exec-shell-subtitle {
+    color: #8ea4ba;
+    font-size: 0.78rem;
+    line-height: 1.45;
+}
+
+.exec-shell-fact {
+    padding: 0.16rem 0.55rem;
+    border: 1px solid rgba(101, 133, 166, 0.16);
+    border-radius: 999px;
+    background: rgba(10, 18, 29, 0.5);
+}
+
+.exec-shell-subtitle {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .exec-output-empty {
     color: #445566;
     font-size: 0.82rem;

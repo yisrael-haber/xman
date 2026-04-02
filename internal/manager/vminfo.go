@@ -59,36 +59,58 @@ func (m *Manager) VMGet(vmRef string) (VMInfo, error) {
 	return b.GetVM(m.operationContext(), vmRef)
 }
 
+func powerStatePollInterval(elapsed time.Duration) time.Duration {
+	switch {
+	case elapsed < 2*time.Second:
+		return 250 * time.Millisecond
+	case elapsed < 10*time.Second:
+		return 500 * time.Millisecond
+	default:
+		return time.Second
+	}
+}
+
+func powerStateProgressInterval(elapsed time.Duration) time.Duration {
+	switch {
+	case elapsed < 10*time.Second:
+		return 2 * time.Second
+	default:
+		return 5 * time.Second
+	}
+}
+
 func waitForPowerState(ctx context.Context, b Backend, emit jobs.EmitFn, vmRef, desiredState, action string) error {
-	deadline := time.NewTimer(45 * time.Second)
-	ticker := time.NewTicker(750 * time.Millisecond)
-	defer deadline.Stop()
-	defer ticker.Stop()
+	started := time.Now()
+	deadline := started.Add(45 * time.Second)
+	nextProgress := started
 
 	for {
-		vms, err := b.ListVMs(ctx)
+		info, err := b.GetVM(ctx, vmRef)
 		if err != nil {
 			return fmt.Errorf("verifying power state: %w", err)
 		}
-
-		for _, vm := range vms {
-			if vm.Ref != vmRef {
-				continue
-			}
-			if vm.PowerState == desiredState {
-				emit(100, fmt.Sprintf("%s complete", action))
-				return nil
-			}
-			emit(70, fmt.Sprintf("Waiting for VM to report %s (current: %s)...", desiredState, vm.PowerState))
-			break
+		if info.PowerState == desiredState {
+			emit(100, fmt.Sprintf("%s complete", action))
+			return nil
 		}
 
+		now := time.Now()
+		elapsed := now.Sub(started)
+		if !now.Before(nextProgress) {
+			emit(70, fmt.Sprintf("Waiting for VM to report %s (current: %s)...", desiredState, info.PowerState))
+			nextProgress = now.Add(powerStateProgressInterval(elapsed))
+		}
+
+		if now.After(deadline) {
+			return fmt.Errorf("%s started, but the VM did not report %s within 45 seconds", action, desiredState)
+		}
+
+		timer := time.NewTimer(powerStatePollInterval(elapsed))
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return ctx.Err()
-		case <-deadline.C:
-			return fmt.Errorf("%s started, but the VM did not report %s within 45 seconds", action, desiredState)
-		case <-ticker.C:
+		case <-timer.C:
 		}
 	}
 }
