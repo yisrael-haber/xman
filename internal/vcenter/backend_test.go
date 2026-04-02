@@ -11,6 +11,7 @@ import (
 
 	"github.com/vmware/govmomi/simulator"
 	"github.com/vmware/govmomi/vim25/methods"
+	"github.com/vmware/govmomi/vim25/mo"
 	"github.com/vmware/govmomi/vim25/soap"
 	"github.com/vmware/govmomi/vim25/types"
 )
@@ -44,7 +45,7 @@ func TestNewBackendMetadataAndDisconnect(t *testing.T) {
 	}
 
 	caps := backend.Capabilities()
-	if !caps.GuestOps || !caps.Inventory || !caps.ToolsInstall {
+	if !caps.GuestOps || !caps.Inventory || !caps.ToolsInstall || !caps.Console {
 		t.Fatalf("Capabilities() = %+v, want all advertised vCenter capabilities enabled", caps)
 	}
 
@@ -58,6 +59,96 @@ func TestNewBackendMetadataAndDisconnect(t *testing.T) {
 
 	if _, err := backend.ListVMs(context.Background()); err == nil || !strings.Contains(err.Error(), "not connected to vCenter") {
 		t.Fatalf("ListVMs() after disconnect error = %v, want not connected error", err)
+	}
+}
+
+func TestConsoleURLBuildsVCenterHTML5ConsoleLink(t *testing.T) {
+	backend, _ := newTestBackend(t)
+	vm := firstVM(t, backend)
+
+	info, err := backend.ConsoleInfo(context.Background(), vm.Ref)
+	if err != nil {
+		t.Fatalf("ConsoleInfo() error = %v", err)
+	}
+
+	u, err := url.Parse(info.URL)
+	if err != nil {
+		t.Fatalf("url.Parse(ConsoleInfo().URL) error = %v", err)
+	}
+
+	if u.User != nil {
+		t.Fatalf("ConsoleInfo() leaked credentials in URL user info: %v", u.User)
+	}
+	if got := u.Path; got != "/ui/webconsole.html" {
+		t.Fatalf("ConsoleInfo() path = %q, want %q", got, "/ui/webconsole.html")
+	}
+
+	q := u.Query()
+	if got := q.Get("vmId"); got != vm.Ref {
+		t.Fatalf("ConsoleInfo() vmId = %q, want %q", got, vm.Ref)
+	}
+	if got := q.Get("vmName"); got != vm.Name {
+		t.Fatalf("ConsoleInfo() vmName = %q, want %q", got, vm.Name)
+	}
+	if got := q.Get("serverGuid"); got == "" {
+		t.Fatal("ConsoleInfo() missing serverGuid")
+	}
+	if got := q.Get("sessionTicket"); got == "" {
+		t.Fatal("ConsoleInfo() missing sessionTicket")
+	}
+	if _, ok := q["thumbprint"]; !ok {
+		t.Fatal("ConsoleInfo() missing thumbprint query parameter")
+	}
+	if got := q.Get("host"); got == "" {
+		t.Fatal("ConsoleInfo() missing host")
+	}
+}
+
+func TestConsoleInfoPrefersReportedFQDNOverConnectedHost(t *testing.T) {
+	backend := &Backend{}
+
+	host, source, warnings, err := backend.consoleHost(&url.URL{Host: "10.20.30.40:443"}, "vcsa.internal.local")
+	if err != nil {
+		t.Fatalf("consoleHost() error = %v", err)
+	}
+	if host != "vcsa.internal.local" {
+		t.Fatalf("consoleHost() host = %q, want %q", host, "vcsa.internal.local")
+	}
+	if source != consoleHostSourceReportedFQDN {
+		t.Fatalf("consoleHost() source = %q, want %q", source, consoleHostSourceReportedFQDN)
+	}
+	if len(warnings) == 0 || !strings.Contains(warnings[0], "10.20.30.40") {
+		t.Fatalf("consoleHost() warnings = %v, want mismatch warning mentioning connected host", warnings)
+	}
+}
+
+func TestNormalizeInventoryPathSegmentsDropsDatacenterVMFolder(t *testing.T) {
+	got := normalizeInventoryPathSegments("/Datacenter-A/vm/Team Folder/App")
+	want := []string{"Datacenter-A", "Team Folder", "App"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("normalizeInventoryPathSegments() = %v, want %v", got, want)
+	}
+}
+
+func TestToVMInfoPropagatesGuestOperationsReady(t *testing.T) {
+	ready := true
+	obj := mo.VirtualMachine{}
+	obj.ManagedEntity.Self = types.ManagedObjectReference{Type: "VirtualMachine", Value: "vm-42"}
+	obj.Config = &types.VirtualMachineConfigInfo{
+		Name: "vm-42",
+		Hardware: types.VirtualHardware{
+			NumCPU:   2,
+			MemoryMB: 4096,
+		},
+	}
+	obj.Guest = &types.GuestInfo{
+		ToolsStatus:          types.VirtualMachineToolsStatusToolsOk,
+		GuestOperationsReady: &ready,
+	}
+
+	info := toVMInfo(obj, []string{"DC0", "Apps"}, nil)
+	if !info.GuestOpsReady {
+		t.Fatalf("toVMInfo() GuestOpsReady = %v, want true", info.GuestOpsReady)
 	}
 }
 
@@ -197,6 +288,174 @@ func TestPowerOperationsInvalidRefReturnError(t *testing.T) {
 	}
 	if err := backend.Suspend(ctx, "vm-does-not-exist"); err == nil {
 		t.Fatal("Suspend() error = nil, want invalid ref error")
+	}
+}
+
+func TestUpdateVMConfigAllowsRenameAndNotesWhilePoweredOn(t *testing.T) {
+	backend, _ := newTestBackend(t)
+	vm := firstVM(t, backend)
+
+	req := manager.VMConfigUpdateRequest{
+		VMRef:    vm.Ref,
+		Name:     vm.Name + "-renamed",
+		Notes:    "Primary application tier",
+		NumCPU:   vm.NumCPU,
+		MemoryMB: vm.MemoryMB,
+		Firmware: vm.Firmware,
+	}
+	if err := backend.UpdateVMConfig(context.Background(), noEmit, req); err != nil {
+		t.Fatalf("UpdateVMConfig() error = %v", err)
+	}
+
+	got := getVM(t, backend, vm.Ref)
+	if got.PowerState != "poweredOn" {
+		t.Fatalf("PowerState = %q, want %q", got.PowerState, "poweredOn")
+	}
+	if got.Name != req.Name {
+		t.Fatalf("Name = %q, want %q", got.Name, req.Name)
+	}
+	if got.Notes != req.Notes {
+		t.Fatalf("Notes = %q, want %q", got.Notes, req.Notes)
+	}
+}
+
+func TestUpdateVMConfigRejectsHardwareChangesWhilePoweredOn(t *testing.T) {
+	backend, _ := newTestBackend(t)
+	vm := firstVM(t, backend)
+
+	nextFirmware := "efi"
+	if normalizeVCenterFirmware(vm.Firmware) == "efi" {
+		nextFirmware = "bios"
+	}
+
+	err := backend.UpdateVMConfig(context.Background(), noEmit, manager.VMConfigUpdateRequest{
+		VMRef:    vm.Ref,
+		Name:     vm.Name,
+		Notes:    vm.Notes,
+		NumCPU:   vm.NumCPU + 1,
+		MemoryMB: vm.MemoryMB + 1024,
+		Firmware: nextFirmware,
+	})
+	if err == nil || !strings.Contains(err.Error(), "powered off") {
+		t.Fatalf("UpdateVMConfig() error = %v, want powered-off precondition", err)
+	}
+}
+
+func TestUpdateVMConfigAppliesHardwareChangesWhenPoweredOff(t *testing.T) {
+	backend, _ := newTestBackend(t)
+	vm := firstVM(t, backend)
+
+	if err := backend.PowerOff(context.Background(), vm.Ref); err != nil {
+		t.Fatalf("PowerOff() error = %v", err)
+	}
+	current := getVM(t, backend, vm.Ref)
+
+	nextFirmware := "efi"
+	if normalizeVCenterFirmware(current.Firmware) == "efi" {
+		nextFirmware = "bios"
+	}
+
+	req := manager.VMConfigUpdateRequest{
+		VMRef:    current.Ref,
+		Name:     current.Name,
+		Notes:    current.Notes,
+		NumCPU:   current.NumCPU + 1,
+		MemoryMB: current.MemoryMB + 1024,
+		Firmware: nextFirmware,
+	}
+	if err := backend.UpdateVMConfig(context.Background(), noEmit, req); err != nil {
+		t.Fatalf("UpdateVMConfig() error = %v", err)
+	}
+
+	got := getVM(t, backend, current.Ref)
+	if got.PowerState != "poweredOff" {
+		t.Fatalf("PowerState = %q, want %q", got.PowerState, "poweredOff")
+	}
+	if got.NumCPU != req.NumCPU {
+		t.Fatalf("NumCPU = %d, want %d", got.NumCPU, req.NumCPU)
+	}
+	if got.MemoryMB != req.MemoryMB {
+		t.Fatalf("MemoryMB = %d, want %d", got.MemoryMB, req.MemoryMB)
+	}
+	if normalizeVCenterFirmware(got.Firmware) != normalizeVCenterFirmware(req.Firmware) {
+		t.Fatalf("Firmware = %q, want normalized %q", got.Firmware, req.Firmware)
+	}
+}
+
+func TestListVMNetworkOptionsReturnsAttachableNetworks(t *testing.T) {
+	model := newTestModel()
+	model.Portgroup = 2
+
+	backend, _ := newBackendWithModel(t, model)
+	vm := firstVM(t, backend)
+
+	options, err := backend.ListVMNetworkOptions(context.Background(), vm.Ref)
+	if err != nil {
+		t.Fatalf("ListVMNetworkOptions() error = %v", err)
+	}
+	if len(options) < 2 {
+		t.Fatalf("ListVMNetworkOptions() len = %d, want at least %d (%+v)", len(options), 2, options)
+	}
+	for _, option := range options {
+		if option.ID == "" || option.Name == "" || option.Type == "" {
+			t.Fatalf("ListVMNetworkOptions() returned incomplete option: %+v", option)
+		}
+	}
+}
+
+func TestUpdateVMNetworkChangesNICAttachmentWhenPoweredOff(t *testing.T) {
+	model := newTestModel()
+	model.Portgroup = 2
+
+	backend, _ := newBackendWithModel(t, model)
+	vm := firstVM(t, backend)
+	if err := backend.PowerOff(context.Background(), vm.Ref); err != nil {
+		t.Fatalf("PowerOff() error = %v", err)
+	}
+
+	current := getVM(t, backend, vm.Ref)
+	if len(current.NetworkAdapters) == 0 {
+		t.Fatalf("GetVM() returned no network adapters: %+v", current)
+	}
+	adapter := current.NetworkAdapters[0]
+
+	options, err := backend.ListVMNetworkOptions(context.Background(), vm.Ref)
+	if err != nil {
+		t.Fatalf("ListVMNetworkOptions() error = %v", err)
+	}
+
+	var target manager.VMNetworkOption
+	for _, option := range options {
+		if option.ID != adapter.NetworkID {
+			target = option
+			break
+		}
+	}
+	if target.ID == "" {
+		t.Fatalf("could not find alternate network option for adapter %+v from %+v", adapter, options)
+	}
+
+	if err := backend.UpdateVMNetwork(context.Background(), noEmit, manager.VMNetworkUpdateRequest{
+		VMRef:     vm.Ref,
+		AdapterID: adapter.ID,
+		NetworkID: target.ID,
+		Connected: false,
+	}); err != nil {
+		t.Fatalf("UpdateVMNetwork() error = %v", err)
+	}
+
+	got := getVM(t, backend, vm.Ref)
+	if len(got.NetworkAdapters) == 0 {
+		t.Fatalf("GetVM() after update returned no network adapters: %+v", got)
+	}
+	if got.NetworkAdapters[0].NetworkID != target.ID {
+		t.Fatalf("NetworkID = %q, want %q", got.NetworkAdapters[0].NetworkID, target.ID)
+	}
+	if got.NetworkAdapters[0].Connected {
+		t.Fatal("Connected = true, want false")
+	}
+	if got.NetworkAdapters[0].Network != target.Name {
+		t.Fatalf("Network = %q, want %q", got.NetworkAdapters[0].Network, target.Name)
 	}
 }
 
@@ -411,15 +670,9 @@ func TestInstallToolsRejectsPoweredOffVM(t *testing.T) {
 	}
 }
 
-func TestInstallToolsRejectsNonWindowsGuests(t *testing.T) {
-	backend, model := newTestBackend(t)
-	vmObj := model.Map().Any("VirtualMachine").(*simulator.VirtualMachine)
-	vmObj.Runtime.PowerState = types.VirtualMachinePowerStatePoweredOn
-	vmObj.Config.GuestFullName = "Ubuntu Linux (64-bit)"
-
-	err := backend.InstallTools(context.Background(), noEmit, vmObj.Reference().Value)
-	if err == nil || !strings.Contains(err.Error(), "open-vm-tools") {
-		t.Fatalf("InstallTools() error = %v, want open-vm-tools guidance", err)
+func TestValidateToolsInstallStateOnlyRequiresPoweredOn(t *testing.T) {
+	if err := validateToolsInstallState(toolsInstallState{poweredOn: true}); err != nil {
+		t.Fatalf("validateToolsInstallState(poweredOn) error = %v, want nil", err)
 	}
 }
 
@@ -429,6 +682,8 @@ func TestInstallToolsReturnsSuccessWhenAlreadyUpToDate(t *testing.T) {
 	vmObj.Runtime.PowerState = types.VirtualMachinePowerStatePoweredOn
 	vmObj.Config.GuestFullName = "Microsoft Windows Server 2022"
 	vmObj.Guest.ToolsStatus = types.VirtualMachineToolsStatusToolsOk
+	ready := true
+	vmObj.Guest.GuestOperationsReady = &ready
 
 	var emitted []string
 	err := backend.InstallTools(context.Background(), func(_ int, message string) {
@@ -437,8 +692,28 @@ func TestInstallToolsReturnsSuccessWhenAlreadyUpToDate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InstallTools() error = %v", err)
 	}
-	if len(emitted) == 0 || emitted[len(emitted)-1] != "VMware Tools are already up to date." {
-		t.Fatalf("InstallTools() emitted %v, want already-up-to-date message", emitted)
+	if len(emitted) == 0 || emitted[len(emitted)-1] != "Guest operations are already ready." {
+		t.Fatalf("InstallTools() emitted %v, want guest-ops-ready message", emitted)
+	}
+}
+
+func TestInstallToolsReturnsWarmupMessageWhenToolsNeedTime(t *testing.T) {
+	backend, model := newTestBackend(t)
+	vmObj := model.Map().Any("VirtualMachine").(*simulator.VirtualMachine)
+	vmObj.Runtime.PowerState = types.VirtualMachinePowerStatePoweredOn
+	vmObj.Config.GuestFullName = "Microsoft Windows Server 2022"
+	vmObj.Guest.ToolsStatus = types.VirtualMachineToolsStatusToolsOk
+	vmObj.Guest.GuestOperationsReady = nil
+
+	var emitted []string
+	err := backend.InstallTools(context.Background(), func(_ int, message string) {
+		emitted = append(emitted, message)
+	}, vmObj.Reference().Value)
+	if err != nil {
+		t.Fatalf("InstallTools() error = %v", err)
+	}
+	if len(emitted) == 0 || !strings.Contains(emitted[len(emitted)-1], "guest operations are still starting") {
+		t.Fatalf("InstallTools() emitted %v, want guest-ops warmup message", emitted)
 	}
 }
 

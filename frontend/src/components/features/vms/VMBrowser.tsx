@@ -1,11 +1,13 @@
-import { useDeferredValue, useEffect, useRef, useState } from 'react';
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { manager } from '../../../../wailsjs/go/models';
+import { formatGuestOpsStatus, formatPowerState, formatToolsStatus } from '../../../utils/vmStatus';
 
 interface Props {
     vms: manager.VMInfo[];
     selected: manager.VMInfo | null;
     loading: boolean;
     error: string;
+    width: number;
     onSelect: (vm: manager.VMInfo) => void;
     onRefresh: () => Promise<void>;
 }
@@ -23,34 +25,6 @@ interface MutableVMFolderNode extends VMFolderNode {
 }
 
 const FOLDER_KEY_SEPARATOR = '\u001f';
-
-function formatPowerState(state: string): string {
-    switch (state) {
-        case 'poweredOn':
-            return 'Powered On';
-        case 'poweredOff':
-            return 'Powered Off';
-        case 'suspended':
-            return 'Suspended';
-        default:
-            return state || 'Unknown';
-    }
-}
-
-function formatToolsStatus(state: string): string {
-    switch (state) {
-        case 'toolsOk':
-            return 'Tools ready';
-        case 'toolsOld':
-            return 'Tools outdated';
-        case 'toolsNotRunning':
-            return 'Tools not running';
-        case 'toolsNotInstalled':
-            return 'Tools not installed';
-        default:
-            return state || 'Tools unknown';
-    }
-}
 
 function folderKey(path: string[]): string {
     return path.join(FOLDER_KEY_SEPARATOR);
@@ -221,7 +195,8 @@ function VMLeaf({ vm, selected, depth, onSelect }: {
     depth: number;
     onSelect: (vm: manager.VMInfo) => void;
 }) {
-    const toolsOk = vm.toolsStatus === 'toolsOk' || vm.toolsStatus === 'toolsOld';
+    const toolsOk = vm.guestOpsReady || vm.toolsStatus === 'toolsOk' || vm.toolsStatus === 'toolsOld';
+    const guestOpsStatus = formatGuestOpsStatus(vm.powerState, vm.guestOpsReady, vm.toolsStatus);
 
     return (
         <li
@@ -231,7 +206,10 @@ function VMLeaf({ vm, selected, depth, onSelect }: {
         >
             <PowerDot state={vm.powerState} />
             <div className="vm-item-body">
-                <span className={`vm-name ${!toolsOk ? 'vm-name--no-tools' : ''}`} title={vm.name}>
+                <span
+                    className={`vm-name ${!toolsOk ? 'vm-name--no-tools' : ''}`}
+                    title={vm.displayPath ? `${vm.displayPath} / ${vm.name}` : vm.name}
+                >
                     {vm.name}
                 </span>
                 <div className="vm-item-meta">
@@ -240,9 +218,9 @@ function VMLeaf({ vm, selected, depth, onSelect }: {
                     </span>
                     <span
                         className={`vm-meta-text ${!vm.ipAddress && !toolsOk ? 'vm-meta-text--warn' : ''}`}
-                        title={vm.ipAddress || formatToolsStatus(vm.toolsStatus)}
+                        title={vm.ipAddress || guestOpsStatus || formatToolsStatus(vm.toolsStatus)}
                     >
-                        {vm.ipAddress || formatToolsStatus(vm.toolsStatus)}
+                        {vm.ipAddress || guestOpsStatus || formatToolsStatus(vm.toolsStatus)}
                     </span>
                 </div>
             </div>
@@ -321,20 +299,24 @@ function FolderBranch({
     );
 }
 
-export default function VMBrowser({ vms, selected, loading, error, onSelect, onRefresh }: Props) {
+export default function VMBrowser({ vms, selected, loading, error, width, onSelect, onRefresh }: Props) {
     const [search, setSearch] = useState('');
     const deferredSearch = useDeferredValue(search);
-    const normalizedSearch = normalizeSearch(deferredSearch);
-    const filteredVMs = normalizedSearch
-        ? vms.filter(vm => vmMatchesSearch(vm, normalizedSearch))
-        : vms;
-    const tree = buildTree(filteredVMs);
-    const topLevelKeys = collectTopLevelFolderKeys(tree);
+    const normalizedSearch = useMemo(() => normalizeSearch(deferredSearch), [deferredSearch]);
+    const filteredVMs = useMemo(() => (
+        normalizedSearch
+            ? vms.filter(vm => vmMatchesSearch(vm, normalizedSearch))
+            : vms
+    ), [vms, normalizedSearch]);
+    const tree = useMemo(() => buildTree(filteredVMs), [filteredVMs]);
+    const topLevelKeys = useMemo(() => collectTopLevelFolderKeys(tree), [tree]);
     const topLevelKeysSignature = topLevelKeys.join(FOLDER_KEY_SEPARATOR);
     const selectedPathKey = folderKey(selected?.pathSegments ?? []);
-    const searchExpansionKeys = normalizedSearch
-        ? collectSearchExpansionKeys(tree, normalizedSearch)
-        : [];
+    const searchExpansionKeys = useMemo(() => (
+        normalizedSearch
+            ? collectSearchExpansionKeys(tree, normalizedSearch)
+            : []
+    ), [tree, normalizedSearch]);
     const searchExpansionSignature = searchExpansionKeys.join(FOLDER_KEY_SEPARATOR);
     const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
     const autoExpandedTopLevelsRef = useRef<Set<string>>(new Set());
@@ -400,7 +382,7 @@ export default function VMBrowser({ vms, selected, loading, error, onSelect, onR
     }
 
     return (
-        <div className="vm-browser">
+        <div className="vm-browser" style={{ width: `${width}px` }}>
             <div className="vm-browser-header">
                 <div className="vm-browser-toolbar">
                     <span className="vm-browser-title">Virtual Machines</span>

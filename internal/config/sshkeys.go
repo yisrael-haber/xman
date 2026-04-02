@@ -26,11 +26,11 @@ type KeyMeta struct {
 }
 
 func sshKeysDir() (string, error) {
-	dir, err := os.UserConfigDir()
+	dir, err := appConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "xman", "ssh-keys"), nil
+	return filepath.Join(dir, "ssh-keys"), nil
 }
 
 func keyLabelDir(label string) (string, error) {

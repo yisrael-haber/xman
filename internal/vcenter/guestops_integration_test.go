@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,9 +18,11 @@ import (
 
 	"xman/internal/manager"
 
+	"github.com/vmware/govmomi"
 	"github.com/vmware/govmomi/find"
 	"github.com/vmware/govmomi/object"
 	"github.com/vmware/govmomi/simulator"
+	"github.com/vmware/govmomi/vim25/methods"
 	"github.com/vmware/govmomi/vim25/types"
 )
 
@@ -177,6 +180,68 @@ func TestDockerGuestOpsUploadDownloadRoundTrip(t *testing.T) {
 	}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("downloaded contents = %v, want %v", got, want)
+	}
+}
+
+func TestDockerGuestOpsConsoleURLCloneTicketOneTimeUse(t *testing.T) {
+	fx := newDockerGuestOpsFixture(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	info, err := fx.backend.ConsoleInfo(ctx, fx.vmRef)
+	if err != nil {
+		t.Fatalf("ConsoleInfo() error = %v", err)
+	}
+
+	consoleURL, err := url.Parse(info.URL)
+	if err != nil {
+		t.Fatalf("url.Parse(ConsoleInfo().URL) error = %v", err)
+	}
+
+	query := consoleURL.Query()
+	if got := query.Get("vmId"); got != fx.vmRef {
+		t.Fatalf("console vmId = %q, want %q", got, fx.vmRef)
+	}
+
+	cloneTicket := query.Get("sessionTicket")
+	if cloneTicket == "" {
+		t.Fatal("ConsoleInfo() missing sessionTicket")
+	}
+
+	sessionClient, err := fx.backend.session.Client()
+	if err != nil {
+		t.Fatalf("session.Client() error = %v", err)
+	}
+
+	sdkURL := *sessionClient.Client.URL()
+	sdkURL.User = nil
+
+	cloneClient, err := govmomi.NewClient(ctx, &sdkURL, true)
+	if err != nil {
+		t.Fatalf("govmomi.NewClient(cloneClient) error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = cloneClient.Logout(context.Background())
+	})
+
+	if err := cloneClient.SessionManager.CloneSession(ctx, cloneTicket); err != nil {
+		t.Fatalf("CloneSession(first use) error = %v", err)
+	}
+	if _, err := methods.GetCurrentTime(ctx, cloneClient); err != nil {
+		t.Fatalf("GetCurrentTime() after CloneSession error = %v", err)
+	}
+
+	replayClient, err := govmomi.NewClient(ctx, &sdkURL, true)
+	if err != nil {
+		t.Fatalf("govmomi.NewClient(replayClient) error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = replayClient.Logout(context.Background())
+	})
+
+	if err := replayClient.SessionManager.CloneSession(ctx, cloneTicket); err == nil {
+		t.Fatal("CloneSession(second use) error = nil, want one-time ticket rejection")
 	}
 }
 

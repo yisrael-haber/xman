@@ -152,6 +152,14 @@ func TestParseVMXParsesFieldsAndDefaultsCPU(t *testing.T) {
 displayName = "lab-vm"
 guestOS = "ubuntu-64"
 memsize = "4096"
+firmware = "efi"
+virtualHW.version = "21"
+uuid.bios = "56 4d ab cd"
+annotation = "first line|0Asecond line"
+ethernet0.present = "true"
+ethernet0.connectionType = "nat"
+ethernet0.generatedAddress = "00:50:56:aa:bb:cc"
+ethernet0.startConnected = "true"
 `
 	if err := os.WriteFile(vmxPath, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
@@ -172,6 +180,51 @@ memsize = "4096"
 	}
 	if got.MemoryMB != 4096 {
 		t.Fatalf("MemoryMB = %d, want %d", got.MemoryMB, 4096)
+	}
+	if got.Firmware != "UEFI" {
+		t.Fatalf("Firmware = %q, want %q", got.Firmware, "UEFI")
+	}
+	if got.HardwareVersion != "v21" {
+		t.Fatalf("HardwareVersion = %q, want %q", got.HardwareVersion, "v21")
+	}
+	if got.UUID != "56 4d ab cd" {
+		t.Fatalf("UUID = %q, want %q", got.UUID, "56 4d ab cd")
+	}
+	if got.Notes != "first line\nsecond line" {
+		t.Fatalf("Notes = %q, want %q", got.Notes, "first line\nsecond line")
+	}
+	if len(got.NetworkAdapters) != 1 {
+		t.Fatalf("NetworkAdapters len = %d, want %d (%v)", len(got.NetworkAdapters), 1, got.NetworkAdapters)
+	}
+	if got.NetworkAdapters[0].Network != "NAT (VMnet8)" {
+		t.Fatalf("NetworkAdapters[0].Network = %q, want %q", got.NetworkAdapters[0].Network, "NAT (VMnet8)")
+	}
+	if got.NetworkAdapters[0].ID != "ethernet0" {
+		t.Fatalf("NetworkAdapters[0].ID = %q, want %q", got.NetworkAdapters[0].ID, "ethernet0")
+	}
+	if got.NetworkAdapters[0].NetworkID != "nat" {
+		t.Fatalf("NetworkAdapters[0].NetworkID = %q, want %q", got.NetworkAdapters[0].NetworkID, "nat")
+	}
+	if got.NetworkAdapters[0].MACAddress != "00:50:56:aa:bb:cc" {
+		t.Fatalf("NetworkAdapters[0].MACAddress = %q, want %q", got.NetworkAdapters[0].MACAddress, "00:50:56:aa:bb:cc")
+	}
+}
+
+func TestVMXNetworkSettingsSupportsDefaultAndCustomNetworks(t *testing.T) {
+	connectionType, vnet, err := vmxNetworkSettings("bridged")
+	if err != nil {
+		t.Fatalf("vmxNetworkSettings(bridged) error = %v", err)
+	}
+	if connectionType != "bridged" || vnet != nil {
+		t.Fatalf("vmxNetworkSettings(bridged) = (%q, %v), want (%q, nil)", connectionType, vnet, "bridged")
+	}
+
+	connectionType, vnet, err = vmxNetworkSettings("custom:vmnet12")
+	if err != nil {
+		t.Fatalf("vmxNetworkSettings(custom) error = %v", err)
+	}
+	if connectionType != "custom" || vnet == nil || *vnet != "vmnet12" {
+		t.Fatalf("vmxNetworkSettings(custom:vmnet12) = (%q, %v), want (%q, vmnet12)", connectionType, vnet, "custom")
 	}
 }
 

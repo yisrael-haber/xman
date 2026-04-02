@@ -93,6 +93,7 @@ func (m *Manager) ConnectionInfo() config.ConnectionInfo {
 		GuestOps:     caps.GuestOps,
 		Inventory:    caps.Inventory,
 		ToolsInstall: caps.ToolsInstall,
+		Console:      caps.Console,
 	}
 }
 

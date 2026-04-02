@@ -16,9 +16,13 @@ export function DeleteGuestCredential(arg1:string):Promise<void>;
 
 export function DeleteSSHKey(arg1:string):Promise<void>;
 
+export function DeleteScript(arg1:string):Promise<void>;
+
 export function Disconnect():Promise<void>;
 
 export function GetGuestCredential(arg1:string):Promise<config.GuestCredential>;
+
+export function GetScript(arg1:string):Promise<config.StoredScript>;
 
 export function LaunchInteractiveSSHSession(arg1:string,arg2:string):Promise<void>;
 
@@ -26,14 +30,20 @@ export function ListGuestCredentials():Promise<Array<config.GuestCredentialMeta>
 
 export function ListSSHKeys():Promise<Array<config.KeyMeta>>;
 
+export function ListScripts():Promise<config.ScriptCatalog>;
+
 export function LoadConnectionSettings():Promise<config.ConnectRequest>;
 
 export function OpenDirectoryDialog(arg1:string):Promise<string>;
 
 export function OpenFileDialog(arg1:string):Promise<string>;
 
+export function OpenVMConsole(arg1:string):Promise<void>;
+
 export function SaveConnectionSettings(arg1:config.ConnectRequest):Promise<void>;
 
 export function SaveFileDialog(arg1:string,arg2:string):Promise<string>;
+
+export function SaveScript(arg1:config.ScriptSaveRequest):Promise<config.StoredScript>;
 
 export function UpdateGuestCredential(arg1:string,arg2:string,arg3:string,arg4:string):Promise<config.GuestCredentialMeta>;

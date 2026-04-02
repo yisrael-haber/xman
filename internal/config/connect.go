@@ -24,4 +24,5 @@ type ConnectionInfo struct {
 	GuestOps     bool   `json:"guestOps"`     // file transfer + guest exec available
 	Inventory    bool   `json:"inventory"`    // host + datastore inventory available
 	ToolsInstall bool   `json:"toolsInstall"` // VMware Tools install/upgrade available
+	Console      bool   `json:"console"`      // browser console launch available
 }

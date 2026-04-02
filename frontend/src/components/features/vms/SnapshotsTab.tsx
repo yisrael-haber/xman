@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { manager } from '../../../../wailsjs/go/models';
 import { SnapshotList, SnapshotCreate, SnapshotRevert, SnapshotDelete } from '../../../../wailsjs/go/manager/Manager';
-import { EventsOn } from '../../../../wailsjs/runtime/runtime';
+import useTerminalJob from '../../../hooks/useTerminalJob';
 
 interface Props {
     vm: manager.VMInfo;
@@ -29,6 +29,7 @@ export default function SnapshotsTab({ vm, onJobStarted, backendType }: Props) {
     const [creating, setCreating] = useState(false);
     const [createErr, setCreateErr] = useState('');
     const supportsAdvancedSnapshotOptions = backendType === 'vcenter';
+    const watchTerminalJob = useTerminalJob();
 
     const load = useCallback(async () => {
         setLoading(true);
@@ -46,9 +47,8 @@ export default function SnapshotsTab({ vm, onJobStarted, backendType }: Props) {
 
     function trackAndReload(id: string) {
         onJobStarted(id, vm.name || vm.ref);
-        const unsub = EventsOn(`job:${id}`, (job: any) => {
+        watchTerminalJob(id, (job: any) => {
             if (job.status === 'done' || job.status === 'failed' || job.status === 'cancelled') {
-                unsub();
                 load();
             }
         });

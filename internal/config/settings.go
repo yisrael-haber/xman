@@ -13,11 +13,11 @@ const keyringSvc = "xman"
 
 // configPath returns the OS-appropriate path for the settings file.
 func configPath() (string, error) {
-	dir, err := os.UserConfigDir()
+	dir, err := appConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "xman", "connection.json"), nil
+	return filepath.Join(dir, "connection.json"), nil
 }
 
 // savedSettings is the on-disk format.  Each backend has its own section so

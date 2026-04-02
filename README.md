@@ -7,10 +7,11 @@ Unified desktop console for VMware VM lifecycle, guest operations, and SSH workf
 The app is meant to make common operator workflows fast:
 - browse VMs
 - power-cycle them
-- run commands
+- run commands and stored scripts
 - transfer files
 - deploy SSH keys
-- install packages remotely
+- manage reusable scripts
+- adjust VM NIC attachments
 - inspect inventory and networks
 
 It is designed for operators who routinely bounce between hypervisor actions and in-guest actions and want those workflows in one place instead of split across the vSphere Client, Workstation UI, SSH terminals, and ad hoc scripts.
@@ -35,7 +36,9 @@ The core workflows are in good shape, the codebase has meaningful automated cove
   - `vCenter` uses inventory folders / vApps
   - `Workstation` uses library folders from `inventory.vmls` when available, with filesystem hierarchy as fallback
 - Filter the VM browser by VM name, folder path, guest OS, IP, or VM reference
+- Launch a browser console for `vCenter` VMs using the VMware HTML5 console page served by vCenter
 - Power on, power off, reset, and suspend VMs
+- Edit per-adapter network attachment and connected-on-boot state while the VM is powered off
 - Keep job completion and VM state refresh synchronized
 
 ### Snapshots
@@ -44,13 +47,17 @@ The core workflows are in good shape, the codebase has meaningful automated cove
 - On vCenter, snapshots also support description, memory capture, and quiesce options
 - Revert to or delete snapshots
 
-### Run Command
-Run commands inside a guest VM using two transports:
+### Run
+Run guest commands inside a VM using two transports:
 
 - **Guest Ops**: uses a selected stored guest credential and requires VMware Tools
 - **SSH**: uses `host + SSH key` only; the SSH username comes from the selected key's default user
 
-Run Command is intentionally modeled as **separate shell sessions**, not a live terminal. Each new command replaces the previous output in the command pane.
+The Run tab is intentionally modeled as **separate shell sessions**, not a live terminal. Each new run replaces the previous output in the output pane.
+
+It supports two execution modes:
+- **Raw Command**: enter the command directly
+- **Stored Script**: choose a saved script from the global **Scripts** feature
 
 It also supports:
 - copy output to clipboard
@@ -65,6 +72,16 @@ The interactive SSH launcher uses:
 
 It is intentionally separate from the in-app command console.
 
+### Scripts
+- Manage reusable stored scripts from the global **Scripts** feature
+- Scripts are stored as regular files under the app config directory in `xman/scripts`
+- Run stored scripts from the VM **Run** tab using the same transport and job model as raw commands
+- Script type is inferred from the filename:
+  - `.sh` for POSIX guests
+  - `.cmd` / `.bat` for Windows guests
+  - `.txt` for generic text snippets
+- `.ps1` files can be stored, but PowerShell-specific execution is intentionally not wired up yet
+
 ### File Transfer
 Upload and download files to or from a guest VM using:
 
@@ -73,19 +90,6 @@ Upload and download files to or from a guest VM using:
 
 For SSH / SFTP, the app uses a stored private key plus that key's default user. For Guest Ops transfers, the app uses a selected stored guest credential. Guest passwords are not used for day-to-day SSH transfers.
 
-### Remote Install
-Upload an installer package to the guest and execute it silently. Supports:
-
-| Package type | Installer invoked |
-|---|---|
-| `.msi` | `msiexec /i ... /qn /norestart` |
-| `.msix` / `.msixbundle` | `powershell Add-AppxPackage` |
-| `.exe` | silent flags (`/S /SILENT /VERYSILENT /quiet`) |
-| `.deb` | `dpkg -i` + `apt-get install -f` |
-| `.rpm` | `rpm -i` |
-
-The detected install command is editable before execution.
-
 ### SSH Keys & Guest Credentials
 - Generate SSH key pairs inside the app
 - Store key metadata including a default SSH username
@@ -93,7 +97,7 @@ The detected install command is editable before execution.
 - View, edit, and delete stored guest credentials without retyping them for every run
 - Deploy the public key to a guest using a one-time password bootstrap flow
 - Use deployed keys for SSH / SFTP afterward without re-entering passwords
-- Use saved guest credentials from a dropdown in Run Command, File Transfer, and Remote Install
+- Use saved guest credentials from a dropdown in Run and File Transfer
 
 ### Deploy SSH Key
 From the VM panel, deploy a selected SSH public key to a guest using:
@@ -107,6 +111,7 @@ This is the only SSH flow that still uses password authentication by design.
 ### Networks
 - **vCenter**: inspect standard switches, distributed switches, port groups, VLAN information, uplinks, attached hosts, and connected VMs
 - **Workstation**: inspect VMnet interfaces on the host OS, including MTU, IP configuration, and connected VMs
+- Reattach individual VM NICs to a different available network and change whether they connect at power on
 
 ### Inventory
 Available on **vCenter**:
@@ -118,6 +123,17 @@ Available on **vCenter**:
 - On vCenter: trigger built-in Tools upgrade when available, otherwise mount the Tools ISO
 - On Workstation: mount the bundled Tools ISO and start installation
 - For Linux and macOS guests, use `open-vm-tools` from the guest OS package manager
+
+### Browser Console
+- Available on `vCenter`
+- Opens the VMware HTML5 console in the default browser with a fresh one-time session ticket
+- Shows console diagnostics in the VM tab before launch, including the selected console host, redacted launch URL, and simple reachability checks
+- Prefers the exact vCenter host you connected to when building the console URL, which helps avoid closed-network FQDN mismatches
+- Does not require public internet access because the console page is served by vCenter itself
+- Requires desktop reachability to:
+  - the `vCenter` endpoint
+  - the ESXi host currently serving the target VM's console
+- Does not require direct network reachability to the guest VM IP
 
 ### Job Tracking
 Long-running operations are tracked as jobs with:
@@ -133,13 +149,13 @@ Long-running operations are tracked as jobs with:
 | Feature                  | vCenter | Workstation |
 |--------------------------|:-------:|:-----------:|
 | VM listing               | ✓       | ✓           |
+| Browser console          | ✓       | —           |
 | Power operations         | ✓       | ✓           |
 | Snapshots                | ✓       | ✓           |
-| Run Command (Guest Ops)  | ✓       | ✓           |
-| Run Command (SSH)        | ✓       | ✓           |
+| Run (Guest Ops)          | ✓       | ✓           |
+| Run (SSH)                | ✓       | ✓           |
 | File Transfer (Guest Ops)| ✓       | ✓           |
 | File Transfer (SSH/SFTP) | ✓       | ✓           |
-| Remote Install           | ✓       | ✓           |
 | Deploy SSH Key           | ✓       | ✓           |
 | Networks view            | ✓       | ✓           |
 | Host inventory           | ✓       | —           |
@@ -155,12 +171,12 @@ The app now uses a lightweight SSH model:
 1. Create an SSH key pair in the **SSH Keys** panel
 2. Set a default user on that key
 3. Use **Deploy SSH Key** once to push the public key to the guest with a password
-4. After that, Run Command / File Transfer / Remote Install over SSH use:
+4. After that, Run / File Transfer over SSH use:
    - `host`
    - `key`
    - the key's default user
 
-For a true live shell, the Run Command tab can also launch the native OS terminal with the system `ssh` client and the selected private key.
+For a true live shell, the Run tab can also launch the native OS terminal with the system `ssh` client and the selected private key.
 
 This avoids keeping per-VM deployment state in local config and keeps the runtime behavior predictable:
 - if the selected key works for `user@host`, SSH succeeds
@@ -168,7 +184,7 @@ This avoids keeping per-VM deployment state in local config and keeps the runtim
 
 ## Guest Ops Requirements
 
-Guest Ops transport for Run Command, File Transfer, and Remote Install requires:
+Guest Ops transport for Run and File Transfer requires:
 - VMware Tools or open-vm-tools installed and running
 - a stored guest credential
 - on vCenter, guest operations privileges on the VM
@@ -423,18 +439,23 @@ xman/
 ├── internal/
 │   ├── config/
 │   │   ├── guestcredentials.go # guest credential metadata + keyring-backed password storage
+│   │   ├── paths.go            # app config root resolution
+│   │   ├── scripts.go          # stored script catalog + CRUD under xman/scripts
 │   │   └── sshkeys.go          # SSH keypair storage and metadata
 │   ├── jobs/                   # Background jobs, progress events, cancellation
 │   ├── manager/                # Backend-agnostic Wails-facing feature layer
 │   │   ├── backend.go
+│   │   ├── commandlabel.go
 │   │   ├── filetransfer.go
 │   │   ├── guestcredentials.go
 │   │   ├── guestexec.go
-│   │   ├── install.go
+│   │   ├── networks.go
 │   │   ├── snapshots.go
 │   │   ├── ssh.go
 │   │   ├── sshkeys.go
 │   │   ├── tools.go
+│   │   ├── vmconfig.go
+│   │   ├── vmnetwork.go
 │   │   └── vminfo.go
 │   ├── sshtransport/
 │   │   ├── deploykey.go        # Password bootstrap for key deployment
@@ -446,7 +467,9 @@ xman/
 │   │   ├── JobsBar.tsx
 │   │   ├── MainView.tsx
 │   │   └── features/
-│   │       ├── sshkeys/
+│   │       ├── sshkeys/        # SSH keys, guest credentials, stored scripts
+│   │       ├── networks/
+│   │       ├── inventory/
 │   │       └── vms/
 │   └── wailsjs/                # Generated Wails bindings
 └── build/                      # Wails packaging assets
@@ -489,7 +512,6 @@ Short-term backend coverage that is worth adding and maintaining:
 ### Command Execution
 - Improve Workstation command cancellation so it attempts to kill the guest-side process, not just interrupt local waiting
 - Add exit code / backend / run timestamp metadata directly in the command pane
-- Consider optional saved command snippets for repeated operator workflows
 
 ### SSH / Security
 - Add SSH host key trust and verification instead of `InsecureIgnoreHostKey`

@@ -31,7 +31,7 @@ func (m *Manager) SnapshotList(vmRef string) ([]SnapshotInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	return b.ListSnapshots(m.ctx, vmRef)
+	return b.ListSnapshots(m.operationContext(), vmRef)
 }
 
 func (m *Manager) SnapshotCreate(req CreateSnapshotRequest) string {

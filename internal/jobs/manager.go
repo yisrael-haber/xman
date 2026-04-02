@@ -125,7 +125,10 @@ func (m *Manager) Get(id string) (*Job, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	job, ok := m.jobs[id]
-	return job, ok
+	if !ok {
+		return nil, false
+	}
+	return job.Clone(), true
 }
 
 // List returns a snapshot of all jobs.
@@ -134,7 +137,7 @@ func (m *Manager) List() []*Job {
 	defer m.mu.RUnlock()
 	out := make([]*Job, 0, len(m.jobs))
 	for _, j := range m.jobs {
-		out = append(out, j)
+		out = append(out, j.Clone())
 	}
 	return out
 }
@@ -144,11 +147,12 @@ func (m *Manager) List() []*Job {
 func (m *Manager) emit(job *Job) {
 	m.mu.RLock()
 	ctx := m.ctx
+	event := job.EventSnapshot()
 	m.mu.RUnlock()
 	if ctx == nil {
 		return
 	}
-	runtime.EventsEmit(ctx, "job:"+job.ID, job)
+	runtime.EventsEmit(ctx, "job:"+event.ID, event)
 }
 
 // --- Wails-exposed methods ---

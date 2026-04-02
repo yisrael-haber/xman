@@ -3,6 +3,7 @@ package manager
 import (
 	"context"
 	"errors"
+	"net"
 	"strings"
 	"sync"
 	"testing"
@@ -21,28 +22,43 @@ type fakeBackend struct {
 
 	disconnectCalls int
 
-	listVMsFunc        func(context.Context) ([]VMInfo, error)
-	getVMFunc          func(context.Context, string) (VMInfo, error)
-	powerOnFunc        func(context.Context, string) error
-	powerOffFunc       func(context.Context, string) error
-	resetFunc          func(context.Context, string) error
-	suspendFunc        func(context.Context, string) error
-	listSnapshotsFunc  func(context.Context, string) ([]SnapshotInfo, error)
-	createSnapshotFunc func(context.Context, jobs.EmitFn, CreateSnapshotRequest) error
-	revertSnapshotFunc func(context.Context, jobs.EmitFn, string) error
-	deleteSnapshotFunc func(context.Context, jobs.EmitFn, string, bool) error
-	uploadFunc         func(context.Context, jobs.EmitFn, UploadRequest) error
-	downloadFunc       func(context.Context, jobs.EmitFn, DownloadRequest) error
-	guestRunFunc       func(context.Context, jobs.EmitFn, RunRequest) error
-	listHostsFunc      func(context.Context) ([]HostInfo, error)
-	listDatastoresFunc func(context.Context) ([]DatastoreInfo, error)
-	listNetworksFunc   func(context.Context) (NetworkSummary, error)
-	installToolsFunc   func(context.Context, jobs.EmitFn, string) error
+	listVMsFunc         func(context.Context) ([]VMInfo, error)
+	getVMFunc           func(context.Context, string) (VMInfo, error)
+	powerOnFunc         func(context.Context, string) error
+	powerOffFunc        func(context.Context, string) error
+	resetFunc           func(context.Context, string) error
+	suspendFunc         func(context.Context, string) error
+	updateVMConfigFunc  func(context.Context, jobs.EmitFn, VMConfigUpdateRequest) error
+	listSnapshotsFunc   func(context.Context, string) ([]SnapshotInfo, error)
+	createSnapshotFunc  func(context.Context, jobs.EmitFn, CreateSnapshotRequest) error
+	revertSnapshotFunc  func(context.Context, jobs.EmitFn, string) error
+	deleteSnapshotFunc  func(context.Context, jobs.EmitFn, string, bool) error
+	uploadFunc          func(context.Context, jobs.EmitFn, UploadRequest) error
+	downloadFunc        func(context.Context, jobs.EmitFn, DownloadRequest) error
+	guestRunFunc        func(context.Context, jobs.EmitFn, RunRequest) error
+	listHostsFunc       func(context.Context) ([]HostInfo, error)
+	listDatastoresFunc  func(context.Context) ([]DatastoreInfo, error)
+	listNetworksFunc    func(context.Context) (NetworkSummary, error)
+	listVMNetworksFunc  func(context.Context, string) ([]VMNetworkOption, error)
+	updateVMNetworkFunc func(context.Context, jobs.EmitFn, VMNetworkUpdateRequest) error
+	installToolsFunc    func(context.Context, jobs.EmitFn, string) error
+	consoleInfoFunc     func(context.Context, string) (ConsoleLaunchInfo, error)
 }
 
-func (b *fakeBackend) BackendType() string        { return b.backendType }
-func (b *fakeBackend) DisplayName() string        { return b.displayName }
-func (b *fakeBackend) Capabilities() Capabilities { return b.capabilities }
+func (b *fakeBackend) BackendType() string { return b.backendType }
+func (b *fakeBackend) DisplayName() string { return b.displayName }
+func (b *fakeBackend) Capabilities() Capabilities {
+	caps := b.capabilities
+	if caps != (Capabilities{}) {
+		return caps
+	}
+	return Capabilities{
+		GuestOps:     b.uploadFunc != nil || b.downloadFunc != nil || b.guestRunFunc != nil,
+		Inventory:    b.listHostsFunc != nil || b.listDatastoresFunc != nil,
+		ToolsInstall: b.installToolsFunc != nil,
+		Console:      b.consoleInfoFunc != nil,
+	}
+}
 func (b *fakeBackend) Disconnect(context.Context) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -82,6 +98,12 @@ func (b *fakeBackend) Reset(ctx context.Context, vmRef string) error {
 func (b *fakeBackend) Suspend(ctx context.Context, vmRef string) error {
 	if b.suspendFunc != nil {
 		return b.suspendFunc(ctx, vmRef)
+	}
+	return nil
+}
+func (b *fakeBackend) UpdateVMConfig(ctx context.Context, emit jobs.EmitFn, req VMConfigUpdateRequest) error {
+	if b.updateVMConfigFunc != nil {
+		return b.updateVMConfigFunc(ctx, emit, req)
 	}
 	return nil
 }
@@ -151,6 +173,24 @@ func (b *fakeBackend) InstallTools(ctx context.Context, emit jobs.EmitFn, vmRef 
 	}
 	return nil
 }
+func (b *fakeBackend) ListVMNetworkOptions(ctx context.Context, vmRef string) ([]VMNetworkOption, error) {
+	if b.listVMNetworksFunc != nil {
+		return b.listVMNetworksFunc(ctx, vmRef)
+	}
+	return nil, nil
+}
+func (b *fakeBackend) UpdateVMNetwork(ctx context.Context, emit jobs.EmitFn, req VMNetworkUpdateRequest) error {
+	if b.updateVMNetworkFunc != nil {
+		return b.updateVMNetworkFunc(ctx, emit, req)
+	}
+	return nil
+}
+func (b *fakeBackend) ConsoleInfo(ctx context.Context, vmRef string) (ConsoleLaunchInfo, error) {
+	if b.consoleInfoFunc != nil {
+		return b.consoleInfoFunc(ctx, vmRef)
+	}
+	return ConsoleLaunchInfo{}, nil
+}
 
 func TestConnectionInfoReflectsBackendAndDisconnectClearsIt(t *testing.T) {
 	jm := jobs.NewManager(nil)
@@ -162,6 +202,7 @@ func TestConnectionInfoReflectsBackendAndDisconnectClearsIt(t *testing.T) {
 			GuestOps:     true,
 			Inventory:    false,
 			ToolsInstall: true,
+			Console:      false,
 		},
 	}
 
@@ -171,8 +212,8 @@ func TestConnectionInfoReflectsBackendAndDisconnectClearsIt(t *testing.T) {
 	if info.BackendType != "workstation" || info.DisplayName != "Local Workstation" {
 		t.Fatalf("ConnectionInfo() = %+v, want backend metadata", info)
 	}
-	if !info.GuestOps || info.Inventory || !info.ToolsInstall {
-		t.Fatalf("ConnectionInfo() capabilities = %+v, want GuestOps=true Inventory=false ToolsInstall=true", info)
+	if !info.GuestOps || info.Inventory || !info.ToolsInstall || info.Console {
+		t.Fatalf("ConnectionInfo() capabilities = %+v, want GuestOps=true Inventory=false ToolsInstall=true Console=false", info)
 	}
 
 	if err := m.Disconnect(context.Background()); err != nil {
@@ -183,6 +224,126 @@ func TestConnectionInfoReflectsBackendAndDisconnectClearsIt(t *testing.T) {
 	}
 	if got := m.ConnectionInfo(); got != (config.ConnectionInfo{}) {
 		t.Fatalf("ConnectionInfo() after disconnect = %+v, want zero value", got)
+	}
+}
+
+func TestVMConsoleURLRejectsUnsupportedBackend(t *testing.T) {
+	jm := jobs.NewManager(nil)
+	m := New(jm)
+	m.ReplaceBackend(context.Background(), &fakeBackend{
+		backendType: "workstation",
+		displayName: "Local Workstation",
+		capabilities: Capabilities{
+			GuestOps:     true,
+			ToolsInstall: true,
+		},
+	})
+
+	if _, err := m.VMConsoleURL("vm-1"); err == nil || !strings.Contains(err.Error(), "not supported") {
+		t.Fatalf("VMConsoleURL() error = %v, want unsupported backend error", err)
+	}
+}
+
+func TestVMConsoleInfoAddsReachabilityAndRedactedURL(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("net.Listen() error = %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+
+	jm := jobs.NewManager(nil)
+	m := New(jm)
+	m.ReplaceBackend(context.Background(), &fakeBackend{
+		backendType: "vcenter",
+		displayName: "Test VC",
+		capabilities: Capabilities{
+			Console: true,
+		},
+		consoleInfoFunc: func(context.Context, string) (ConsoleLaunchInfo, error) {
+			return ConsoleLaunchInfo{
+				URL:           "https://127.0.0.1/ui/webconsole.html?vmId=vm-1&sessionTicket=abcdef1234567890",
+				VCenterURL:    "http://" + listener.Addr().String(),
+				ConsoleHost:   "127.0.0.1",
+				TicketPreview: "abcdef...7890",
+			}, nil
+		},
+	})
+
+	info, err := m.VMConsoleInfo("vm-1")
+	if err != nil {
+		t.Fatalf("VMConsoleInfo() error = %v", err)
+	}
+	if info.DisplayURL == info.URL || !strings.Contains(info.DisplayURL, "sessionTicket=abcdef...7890") {
+		t.Fatalf("DisplayURL = %q, want redacted session ticket based on URL %q", info.DisplayURL, info.URL)
+	}
+	if !info.VCenterCheck.Reachable {
+		t.Fatalf("VCenterCheck = %+v, want reachable", info.VCenterCheck)
+	}
+	if !info.ConsoleHostCheck.Reachable {
+		t.Fatalf("ConsoleHostCheck = %+v, want reachable", info.ConsoleHostCheck)
+	}
+}
+
+func TestVMNetworkOptionsUsesBackendImplementation(t *testing.T) {
+	jm := jobs.NewManager(nil)
+	m := New(jm)
+	want := []VMNetworkOption{
+		{ID: "network-a", Name: "App Network", Type: "Standard"},
+	}
+	m.ReplaceBackend(context.Background(), &fakeBackend{
+		backendType: "vcenter",
+		displayName: "Test VC",
+		listVMNetworksFunc: func(_ context.Context, vmRef string) ([]VMNetworkOption, error) {
+			if vmRef != "vm-42" {
+				t.Fatalf("vmRef = %q, want %q", vmRef, "vm-42")
+			}
+			return want, nil
+		},
+	})
+
+	got, err := m.VMNetworkOptions("vm-42")
+	if err != nil {
+		t.Fatalf("VMNetworkOptions() error = %v", err)
+	}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("VMNetworkOptions() = %+v, want %+v", got, want)
+	}
+}
+
+func TestVMUpdateNetworkSubmitsJobToBackend(t *testing.T) {
+	jm := jobs.NewManager(nil)
+	m := New(jm)
+	req := VMNetworkUpdateRequest{
+		VMRef:     "vm-42",
+		AdapterID: "nic-1",
+		NetworkID: "network-a",
+		Connected: true,
+	}
+	called := make(chan VMNetworkUpdateRequest, 1)
+	m.ReplaceBackend(context.Background(), &fakeBackend{
+		backendType: "vcenter",
+		displayName: "Test VC",
+		updateVMNetworkFunc: func(_ context.Context, _ jobs.EmitFn, got VMNetworkUpdateRequest) error {
+			called <- got
+			return nil
+		},
+	})
+
+	jobID := m.VMUpdateNetwork(req)
+	if jobID == "" {
+		t.Fatal("VMUpdateNetwork() returned empty job ID")
+	}
+
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+
+	select {
+	case got := <-called:
+		if got != req {
+			t.Fatalf("UpdateVMNetwork() request = %+v, want %+v", got, req)
+		}
+	case <-deadline.C:
+		t.Fatal("timed out waiting for UpdateVMNetwork backend call")
 	}
 }
 

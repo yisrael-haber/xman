@@ -26,6 +26,10 @@ export function Install(arg1) {
   return window['go']['manager']['Manager']['Install'](arg1);
 }
 
+export function InstallCommandPreview(arg1, arg2) {
+  return window['go']['manager']['Manager']['InstallCommandPreview'](arg1, arg2);
+}
+
 export function InventoryDatastores() {
   return window['go']['manager']['Manager']['InventoryDatastores']();
 }
@@ -82,6 +86,14 @@ export function Upload(arg1) {
   return window['go']['manager']['Manager']['Upload'](arg1);
 }
 
+export function VMConsoleInfo(arg1) {
+  return window['go']['manager']['Manager']['VMConsoleInfo'](arg1);
+}
+
+export function VMConsoleURL(arg1) {
+  return window['go']['manager']['Manager']['VMConsoleURL'](arg1);
+}
+
 export function VMGet(arg1) {
   return window['go']['manager']['Manager']['VMGet'](arg1);
 }
@@ -92,6 +104,10 @@ export function VMInstallTools(arg1) {
 
 export function VMList() {
   return window['go']['manager']['Manager']['VMList']();
+}
+
+export function VMNetworkOptions(arg1) {
+  return window['go']['manager']['Manager']['VMNetworkOptions'](arg1);
 }
 
 export function VMPowerOff(arg1) {
@@ -108,4 +124,12 @@ export function VMReset(arg1) {
 
 export function VMSuspend(arg1) {
   return window['go']['manager']['Manager']['VMSuspend'](arg1);
+}
+
+export function VMUpdateConfig(arg1) {
+  return window['go']['manager']['Manager']['VMUpdateConfig'](arg1);
+}
+
+export function VMUpdateNetwork(arg1) {
+  return window['go']['manager']['Manager']['VMUpdateNetwork'](arg1);
 }

@@ -16,6 +16,8 @@ export function GuestRun(arg1:manager.RunRequest):Promise<string>;
 
 export function Install(arg1:manager.InstallRequest):Promise<string>;
 
+export function InstallCommandPreview(arg1:string,arg2:string):Promise<string>;
+
 export function InventoryDatastores():Promise<Array<manager.DatastoreInfo>>;
 
 export function InventoryHosts():Promise<Array<manager.HostInfo>>;
@@ -44,11 +46,17 @@ export function SnapshotRevert(arg1:string):Promise<string>;
 
 export function Upload(arg1:manager.UploadRequest):Promise<string>;
 
+export function VMConsoleInfo(arg1:string):Promise<manager.ConsoleLaunchInfo>;
+
+export function VMConsoleURL(arg1:string):Promise<string>;
+
 export function VMGet(arg1:string):Promise<manager.VMInfo>;
 
 export function VMInstallTools(arg1:string):Promise<string>;
 
 export function VMList():Promise<Array<manager.VMInfo>>;
+
+export function VMNetworkOptions(arg1:string):Promise<Array<manager.VMNetworkOption>>;
 
 export function VMPowerOff(arg1:string):Promise<string>;
 
@@ -57,3 +65,7 @@ export function VMPowerOn(arg1:string):Promise<string>;
 export function VMReset(arg1:string):Promise<string>;
 
 export function VMSuspend(arg1:string):Promise<string>;
+
+export function VMUpdateConfig(arg1:manager.VMConfigUpdateRequest):Promise<string>;
+
+export function VMUpdateNetwork(arg1:manager.VMNetworkUpdateRequest):Promise<string>;

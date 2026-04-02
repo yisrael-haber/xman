@@ -7,7 +7,7 @@ import (
 // PortGroupInfo describes one port group (network) on a virtual switch.
 type PortGroupInfo struct {
 	Name    string   `json:"name"`
-	VLAN    string   `json:"vlan"`    // "—", "100", "trunk", "PVLAN 10"
+	VLAN    string   `json:"vlan"` // "—", "100", "trunk", "PVLAN 10"
 	VMCount int      `json:"vmCount"`
 	Hosts   []string `json:"hosts"`
 }
@@ -54,5 +54,5 @@ func (m *Manager) InventoryNetworks() (NetworkSummary, error) {
 	if err != nil {
 		return NetworkSummary{}, err
 	}
-	return b.ListNetworks(m.ctx)
+	return b.ListNetworks(m.operationContext())
 }

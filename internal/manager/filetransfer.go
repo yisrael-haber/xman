@@ -30,7 +30,7 @@ type DownloadRequest struct {
 func (m *Manager) Upload(req UploadRequest) string {
 	label := "Upload: " + req.LocalPath + " → " + req.GuestPath
 	return m.submitJob("filetransfer", label, func(ctx context.Context, emit jobs.EmitFn) error {
-		b, err := m.getBackend()
+		b, err := m.getGuestOpsBackend()
 		if err != nil {
 			return err
 		}
@@ -45,7 +45,7 @@ func (m *Manager) Upload(req UploadRequest) string {
 func (m *Manager) Download(req DownloadRequest) string {
 	label := "Download: " + req.GuestPath + " → " + req.LocalPath
 	return m.submitJob("filetransfer", label, func(ctx context.Context, emit jobs.EmitFn) error {
-		b, err := m.getBackend()
+		b, err := m.getGuestOpsBackend()
 		if err != nil {
 			return err
 		}

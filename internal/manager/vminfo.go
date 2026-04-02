@@ -9,17 +9,38 @@ import (
 )
 
 // VMInfo is a serialisable summary of a virtual machine.
+type VMNetworkAdapter struct {
+	ID          string   `json:"id"`
+	Label       string   `json:"label"`
+	NetworkID   string   `json:"networkId"`
+	Network     string   `json:"network"`
+	NetworkType string   `json:"networkType"`
+	MACAddress  string   `json:"macAddress"`
+	Connected   bool     `json:"connected"`
+	IPAddresses []string `json:"ipAddresses"`
+}
+
 type VMInfo struct {
-	Ref          string   `json:"ref"`
-	Name         string   `json:"name"`
-	PathSegments []string `json:"pathSegments"`
-	DisplayPath  string   `json:"displayPath"`
-	PowerState   string   `json:"powerState"`
-	ToolsStatus  string   `json:"toolsStatus"`
-	GuestOS      string   `json:"guestOS"`
-	IPAddress    string   `json:"ipAddress"`
-	NumCPU       int32    `json:"numCPU"`
-	MemoryMB     int32    `json:"memoryMB"`
+	Ref             string             `json:"ref"`
+	Name            string             `json:"name"`
+	PathSegments    []string           `json:"pathSegments"`
+	DisplayPath     string             `json:"displayPath"`
+	PowerState      string             `json:"powerState"`
+	ToolsStatus     string             `json:"toolsStatus"`
+	GuestOpsReady   bool               `json:"guestOpsReady"`
+	GuestOS         string             `json:"guestOS"`
+	GuestHostname   string             `json:"guestHostname,omitempty"`
+	IPAddress       string             `json:"ipAddress"`
+	NumCPU          int32              `json:"numCPU"`
+	MemoryMB        int32              `json:"memoryMB"`
+	Firmware        string             `json:"firmware,omitempty"`
+	HardwareVersion string             `json:"hardwareVersion,omitempty"`
+	UUID            string             `json:"uuid,omitempty"`
+	Notes           string             `json:"notes,omitempty"`
+	VMXPath         string             `json:"vmxPath,omitempty"`
+	HostName        string             `json:"hostName,omitempty"`
+	DatastoreNames  []string           `json:"datastoreNames,omitempty"`
+	NetworkAdapters []VMNetworkAdapter `json:"networkAdapters,omitempty"`
 }
 
 func (m *Manager) VMList() ([]VMInfo, error) {
@@ -27,7 +48,7 @@ func (m *Manager) VMList() ([]VMInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	return b.ListVMs(m.ctx)
+	return b.ListVMs(m.operationContext())
 }
 
 func (m *Manager) VMGet(vmRef string) (VMInfo, error) {
@@ -35,7 +56,7 @@ func (m *Manager) VMGet(vmRef string) (VMInfo, error) {
 	if err != nil {
 		return VMInfo{}, err
 	}
-	return b.GetVM(m.ctx, vmRef)
+	return b.GetVM(m.operationContext(), vmRef)
 }
 
 func waitForPowerState(ctx context.Context, b Backend, emit jobs.EmitFn, vmRef, desiredState, action string) error {

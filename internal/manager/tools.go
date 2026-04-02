@@ -8,7 +8,7 @@ import (
 
 func (m *Manager) VMInstallTools(vmRef string) string {
 	return m.submitJob("tools", "Install VMware Tools", func(ctx context.Context, emit jobs.EmitFn) error {
-		b, err := m.getBackend()
+		b, err := m.getToolsInstallBackend()
 		if err != nil {
 			return err
 		}

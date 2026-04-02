@@ -30,12 +30,20 @@ export function DeleteSSHKey(arg1) {
   return window['go']['main']['App']['DeleteSSHKey'](arg1);
 }
 
+export function DeleteScript(arg1) {
+  return window['go']['main']['App']['DeleteScript'](arg1);
+}
+
 export function Disconnect() {
   return window['go']['main']['App']['Disconnect']();
 }
 
 export function GetGuestCredential(arg1) {
   return window['go']['main']['App']['GetGuestCredential'](arg1);
+}
+
+export function GetScript(arg1) {
+  return window['go']['main']['App']['GetScript'](arg1);
 }
 
 export function LaunchInteractiveSSHSession(arg1, arg2) {
@@ -50,6 +58,10 @@ export function ListSSHKeys() {
   return window['go']['main']['App']['ListSSHKeys']();
 }
 
+export function ListScripts() {
+  return window['go']['main']['App']['ListScripts']();
+}
+
 export function LoadConnectionSettings() {
   return window['go']['main']['App']['LoadConnectionSettings']();
 }
@@ -62,12 +74,20 @@ export function OpenFileDialog(arg1) {
   return window['go']['main']['App']['OpenFileDialog'](arg1);
 }
 
+export function OpenVMConsole(arg1) {
+  return window['go']['main']['App']['OpenVMConsole'](arg1);
+}
+
 export function SaveConnectionSettings(arg1) {
   return window['go']['main']['App']['SaveConnectionSettings'](arg1);
 }
 
 export function SaveFileDialog(arg1, arg2) {
   return window['go']['main']['App']['SaveFileDialog'](arg1, arg2);
+}
+
+export function SaveScript(arg1) {
+  return window['go']['main']['App']['SaveScript'](arg1);
 }
 
 export function UpdateGuestCredential(arg1, arg2, arg3, arg4) {

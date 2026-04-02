@@ -81,6 +81,14 @@ func TestBackendVMInfoFromPathUsesInventoryRootMetadataWithoutFilesystemFallback
 	}
 }
 
+func TestBackendDoesNotImplementConsoleSupport(t *testing.T) {
+	backend := &Backend{}
+
+	if _, ok := any(backend).(manager.ConsoleBackend); ok {
+		t.Fatal("Workstation backend unexpectedly implements manager.ConsoleBackend")
+	}
+}
+
 func TestBackendPowerAndSnapshotCommands(t *testing.T) {
 	vmDir := t.TempDir()
 	vmxPath := writeTestVMX(t, vmDir, "ops-vm", "ubuntu-64", 2, 2048)
@@ -144,6 +152,182 @@ func TestBackendPowerAndSnapshotCommands(t *testing.T) {
 	}
 }
 
+func TestUpdateVMConfigPoweredOffRewritesVMX(t *testing.T) {
+	vmDir := t.TempDir()
+	vmxPath := writeTestVMX(t, vmDir, "config-vm", "ubuntu-64", 2, 2048)
+
+	backend, _, _ := newFakeVmrunBackend(t, vmDir, map[string]string{
+		"FAKE_VMRUN_LIST_OUTPUT": "Total running VMs: 0\n",
+	})
+
+	req := manager.VMConfigUpdateRequest{
+		VMRef:    vmxPath,
+		Name:     "config-vm-renamed",
+		Notes:    "Primary app\nNeeds maintenance window",
+		NumCPU:   4,
+		MemoryMB: 8192,
+		Firmware: "efi",
+	}
+	if err := backend.UpdateVMConfig(context.Background(), noEmitWS, req); err != nil {
+		t.Fatalf("UpdateVMConfig() error = %v", err)
+	}
+
+	got, err := backend.GetVM(context.Background(), vmxPath)
+	if err != nil {
+		t.Fatalf("GetVM() error = %v", err)
+	}
+	if got.Name != req.Name {
+		t.Fatalf("Name = %q, want %q", got.Name, req.Name)
+	}
+	if got.Notes != req.Notes {
+		t.Fatalf("Notes = %q, want %q", got.Notes, req.Notes)
+	}
+	if got.NumCPU != req.NumCPU {
+		t.Fatalf("NumCPU = %d, want %d", got.NumCPU, req.NumCPU)
+	}
+	if got.MemoryMB != req.MemoryMB {
+		t.Fatalf("MemoryMB = %d, want %d", got.MemoryMB, req.MemoryMB)
+	}
+	if got.Firmware != "UEFI" {
+		t.Fatalf("Firmware = %q, want %q", got.Firmware, "UEFI")
+	}
+
+	raw, err := os.ReadFile(vmxPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", vmxPath, err)
+	}
+	text := string(raw)
+	for _, want := range []string{
+		`displayName = "config-vm-renamed"`,
+		`annotation = "Primary app|0ANeeds maintenance window"`,
+		`numvcpus = "4"`,
+		`memsize = "8192"`,
+		`firmware = "efi"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("updated VMX missing %q\nfull contents:\n%s", want, text)
+		}
+	}
+}
+
+func TestUpdateVMConfigRejectsRunningWorkstationVM(t *testing.T) {
+	vmDir := t.TempDir()
+	vmxPath := writeTestVMX(t, vmDir, "config-live", "ubuntu-64", 2, 2048)
+
+	backend, _, _ := newFakeVmrunBackend(t, vmDir, map[string]string{
+		"FAKE_VMRUN_LIST_OUTPUT": "Total running VMs: 1\n" + vmxPath + "\n",
+	})
+
+	err := backend.UpdateVMConfig(context.Background(), noEmitWS, manager.VMConfigUpdateRequest{
+		VMRef:    vmxPath,
+		Name:     "should-not-change",
+		Notes:    "still live",
+		NumCPU:   4,
+		MemoryMB: 4096,
+		Firmware: "efi",
+	})
+	if err == nil || !strings.Contains(err.Error(), "powered off") {
+		t.Fatalf("UpdateVMConfig() error = %v, want powered-off precondition", err)
+	}
+}
+
+func TestUpdateVMNetworkPoweredOffRewritesVMX(t *testing.T) {
+	vmDir := t.TempDir()
+	vmxPath := writeTestVMX(t, vmDir, "network-vm", "ubuntu-64", 2, 2048)
+	f, err := os.OpenFile(vmxPath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("OpenFile(%q) error = %v", vmxPath, err)
+	}
+	if _, err := f.WriteString("ethernet0.present = \"true\"\n" +
+		"ethernet0.connectionType = \"nat\"\n" +
+		"ethernet0.generatedAddress = \"00:50:56:aa:bb:cc\"\n" +
+		"ethernet0.startConnected = \"true\"\n"); err != nil {
+		_ = f.Close()
+		t.Fatalf("WriteString(%q) error = %v", vmxPath, err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close(%q) error = %v", vmxPath, err)
+	}
+
+	backend, _, _ := newFakeVmrunBackend(t, vmDir, map[string]string{
+		"FAKE_VMRUN_LIST_OUTPUT": "Total running VMs: 0\n",
+	})
+
+	if err := backend.UpdateVMNetwork(context.Background(), noEmitWS, manager.VMNetworkUpdateRequest{
+		VMRef:     vmxPath,
+		AdapterID: "ethernet0",
+		NetworkID: "bridged",
+		Connected: false,
+	}); err != nil {
+		t.Fatalf("UpdateVMNetwork() error = %v", err)
+	}
+
+	got, err := backend.GetVM(context.Background(), vmxPath)
+	if err != nil {
+		t.Fatalf("GetVM() error = %v", err)
+	}
+	if len(got.NetworkAdapters) != 1 {
+		t.Fatalf("NetworkAdapters len = %d, want %d (%v)", len(got.NetworkAdapters), 1, got.NetworkAdapters)
+	}
+	if got.NetworkAdapters[0].NetworkID != "bridged" {
+		t.Fatalf("NetworkID = %q, want %q", got.NetworkAdapters[0].NetworkID, "bridged")
+	}
+	if got.NetworkAdapters[0].Network != "Bridged (VMnet0)" {
+		t.Fatalf("Network = %q, want %q", got.NetworkAdapters[0].Network, "Bridged (VMnet0)")
+	}
+	if got.NetworkAdapters[0].Connected {
+		t.Fatal("Connected = true, want false")
+	}
+
+	raw, err := os.ReadFile(vmxPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", vmxPath, err)
+	}
+	text := string(raw)
+	for _, want := range []string{
+		`ethernet0.connectionType = "bridged"`,
+		`ethernet0.startConnected = "false"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("updated VMX missing %q\nfull contents:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, `ethernet0.vnet =`) {
+		t.Fatalf("updated VMX unexpectedly kept ethernet0.vnet\nfull contents:\n%s", text)
+	}
+}
+
+func TestUpdateVMNetworkRejectsRunningWorkstationVM(t *testing.T) {
+	vmDir := t.TempDir()
+	vmxPath := writeTestVMX(t, vmDir, "network-live", "ubuntu-64", 2, 2048)
+	f, err := os.OpenFile(vmxPath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("OpenFile(%q) error = %v", vmxPath, err)
+	}
+	if _, err := f.WriteString("ethernet0.present = \"true\"\n" +
+		"ethernet0.connectionType = \"nat\"\n"); err != nil {
+		_ = f.Close()
+		t.Fatalf("WriteString(%q) error = %v", vmxPath, err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close(%q) error = %v", vmxPath, err)
+	}
+
+	backend, _, _ := newFakeVmrunBackend(t, vmDir, map[string]string{
+		"FAKE_VMRUN_LIST_OUTPUT": "Total running VMs: 1\n" + vmxPath + "\n",
+	})
+
+	err = backend.UpdateVMNetwork(context.Background(), noEmitWS, manager.VMNetworkUpdateRequest{
+		VMRef:     vmxPath,
+		AdapterID: "ethernet0",
+		NetworkID: "bridged",
+		Connected: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "powered off") {
+		t.Fatalf("UpdateVMNetwork() error = %v, want powered-off precondition", err)
+	}
+}
+
 func TestBackendGuestRunNonZeroReturnsNilAndEmitsOutput(t *testing.T) {
 	vmDir := t.TempDir()
 	vmxPath := writeTestVMX(t, vmDir, "exec-vm", "ubuntu-64", 2, 2048)
@@ -191,7 +375,7 @@ func TestBackendGuestRunNonZeroReturnsNilAndEmitsOutput(t *testing.T) {
 	}
 }
 
-func TestBackendUploadDownloadAndUnsupportedInventory(t *testing.T) {
+func TestBackendUploadDownloadAndInventoryCapability(t *testing.T) {
 	vmDir := t.TempDir()
 	vmxPath := writeTestVMX(t, vmDir, "transfer-vm", "ubuntu-64", 2, 2048)
 	localSource := filepath.Join(vmDir, "local.txt")
@@ -233,11 +417,8 @@ func TestBackendUploadDownloadAndUnsupportedInventory(t *testing.T) {
 		t.Fatalf("downloaded content = %q, want %q", string(got), "downloaded content\n")
 	}
 
-	if _, err := backend.ListHosts(context.Background()); err == nil {
-		t.Fatal("ListHosts() error = nil, want unsupported error")
-	}
-	if _, err := backend.ListDatastores(context.Background()); err == nil {
-		t.Fatal("ListDatastores() error = nil, want unsupported error")
+	if _, ok := any(backend).(manager.InventoryBackend); ok {
+		t.Fatal("Workstation backend unexpectedly implements manager.InventoryBackend")
 	}
 }
 

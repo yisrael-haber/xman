@@ -1,54 +1,36 @@
 import { useState, useEffect } from 'react';
-import { manager, config } from '../../../../wailsjs/go/models';
+import { manager } from '../../../../wailsjs/go/models';
 import { DeploySSHKey } from '../../../../wailsjs/go/manager/Manager';
-import { ListSSHKeys } from '../../../../wailsjs/go/main/App';
+import type { VMTransportState } from '../../../hooks/useVMTransport';
 
 interface Props {
     vm: manager.VMInfo;
     onJobStarted: (id: string, targetName?: string) => void;
+    transport: VMTransportState;
 }
 
-export default function DeploySSHKeyTab({ vm, onJobStarted }: Props) {
-    const [keys,      setKeys]      = useState<config.KeyMeta[]>([]);
-    const [label,     setLabel]     = useState('');
-    const [host,      setHost]      = useState(vm.ipAddress || '');
+export default function DeploySSHKeyTab({ vm, onJobStarted, transport }: Props) {
     const [port,      setPort]      = useState(22);
     const [username,  setUsername]  = useState('');
     const [password,  setPassword]  = useState('');
     const [busy,      setBusy]      = useState(false);
     const [error,     setError]     = useState('');
-    const [keysError, setKeysError] = useState('');
 
     useEffect(() => {
-        setHost(vm.ipAddress || '');
-    }, [vm.ref, vm.ipAddress]);
-
-    useEffect(() => {
-        ListSSHKeys()
-            .then(list => {
-                const l = list ?? [];
-                setKeys(l);
-                if (l.length > 0) {
-                    setLabel(l[0].label);
-                    setUsername(l[0].defaultUser || '');
-                }
-            })
-            .catch((e: any) => setKeysError(String(e)));
-    }, []);
-
-    // When selected key changes, pre-fill username from its defaultUser.
-    useEffect(() => {
-        const k = keys.find(k => k.label === label);
-        if (k?.defaultUser) setUsername(k.defaultUser);
-    }, [label]);
+        if (!transport.keys.length) {
+            setUsername('');
+            return;
+        }
+        setUsername(transport.selectedKey?.defaultUser || '');
+    }, [transport.keyLabel, transport.keys.length, transport.selectedKey?.defaultUser]);
 
     async function handleDeploy() {
         setError('');
         setBusy(true);
         try {
             const id = await DeploySSHKey({
-                label,
-                host,
+                label: transport.keyLabel,
+                host: transport.sshHost,
                 port,
                 username,
                 password,
@@ -62,18 +44,17 @@ export default function DeploySSHKeyTab({ vm, onJobStarted }: Props) {
         }
     }
 
-    const selectedKey = keys.find(k => k.label === label);
-    const canDeploy = !busy && !!label && !!host && port > 0 && !!username;
+    const canDeploy = !busy && !!transport.keyLabel && !!transport.sshHost && port > 0 && !!username;
 
-    if (keysError) {
-        return <div className="tab-body"><p className="form-error">{keysError}</p></div>;
+    if (transport.keysError) {
+        return <div className="tab-body"><p className="form-error">{transport.keysError}</p></div>;
     }
 
     return (
         <div className="tab-body tab-body--fill tab-body--centered">
             <div className="form-section tab-stack">
 
-                {keys.length === 0 ? (
+                {transport.keys.length === 0 ? (
                     <div className="notice notice--warn">
                         No SSH keys found. Create one in the SSH Keys panel first.
                     </div>
@@ -81,8 +62,8 @@ export default function DeploySSHKeyTab({ vm, onJobStarted }: Props) {
                     <>
                         <div className="field">
                             <label>Key</label>
-                            <select value={label} onChange={e => setLabel(e.target.value)}>
-                                {keys.map(k => (
+                            <select value={transport.keyLabel} onChange={e => transport.setKeyLabel(e.target.value)}>
+                                {transport.keys.map(k => (
                                     <option key={k.label} value={k.label}>
                                         {k.label} ({k.algorithm})
                                     </option>
@@ -90,11 +71,11 @@ export default function DeploySSHKeyTab({ vm, onJobStarted }: Props) {
                             </select>
                         </div>
 
-                        {selectedKey && (
+                        {transport.selectedKey && (
                             <div className="ssh-deploy-pubkey-preview">
-                                <span className="ssh-key-badge">{selectedKey.algorithm}</span>
-                                <code className="ssh-deploy-pubkey-snippet" title={selectedKey.publicKey}>
-                                    {selectedKey.publicKey.slice(0, 48)}…
+                                <span className="ssh-key-badge">{transport.selectedKey.algorithm}</span>
+                                <code className="ssh-deploy-pubkey-snippet" title={transport.selectedKey.publicKey}>
+                                    {transport.selectedKey.publicKey.slice(0, 48)}…
                                 </code>
                             </div>
                         )}
@@ -103,8 +84,8 @@ export default function DeploySSHKeyTab({ vm, onJobStarted }: Props) {
                             <div className="field field--inline">
                                 <label>Host</label>
                                 <input
-                                    value={host}
-                                    onChange={e => setHost(e.target.value)}
+                                    value={transport.sshHost}
+                                    onChange={e => transport.setSshHost(e.target.value)}
                                     placeholder="192.168.1.100"
                                     autoComplete="off"
                                 />

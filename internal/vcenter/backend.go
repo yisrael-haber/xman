@@ -4,16 +4,23 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
+	"xman/internal/executil"
 	"xman/internal/jobs"
 	"xman/internal/manager"
 
+	"github.com/vmware/govmomi"
+	"github.com/vmware/govmomi/fault"
+	"github.com/vmware/govmomi/find"
 	"github.com/vmware/govmomi/guest/toolbox"
 	"github.com/vmware/govmomi/object"
+	"github.com/vmware/govmomi/session"
 	"github.com/vmware/govmomi/view"
 	"github.com/vmware/govmomi/vim25/methods"
 	"github.com/vmware/govmomi/vim25/mo"
@@ -21,10 +28,36 @@ import (
 	"github.com/vmware/govmomi/vim25/types"
 )
 
+const (
+	consoleHostSourceConnectedHost = "connected_host"
+	consoleHostSourceReportedFQDN  = "reported_fqdn"
+	consoleHostSourceSessionHost   = "session_host"
+	inventoryPathCacheTTL          = 30 * time.Second
+	guestOpsReadyPollInterval      = 3 * time.Second
+	guestOpsWarmupWait             = 10 * time.Second
+	guestOpsBootstrapWait          = 45 * time.Second
+	guestOpsUpgradeWait            = 90 * time.Second
+)
+
 // Backend implements manager.Backend against a vCenter session.
 type Backend struct {
-	session *Session
+	session     *Session
+	pathCacheMu sync.RWMutex
+	pathCache   map[string]cachedPathSegments
 }
+
+type cachedPathSegments struct {
+	segments  []string
+	expiresAt time.Time
+}
+
+var (
+	_ manager.Backend             = (*Backend)(nil)
+	_ manager.GuestOpsBackend     = (*Backend)(nil)
+	_ manager.InventoryBackend    = (*Backend)(nil)
+	_ manager.ToolsInstallBackend = (*Backend)(nil)
+	_ manager.ConsoleBackend      = (*Backend)(nil)
+)
 
 // NewBackend connects to vCenter and returns a ready Backend.
 func NewBackend(ctx context.Context, vcURL, username, password string, insecure bool) (*Backend, error) {
@@ -38,7 +71,10 @@ func NewBackend(ctx context.Context, vcURL, username, password string, insecure 
 		return nil, err
 	}
 	s.StartKeepAlive(ctx)
-	return &Backend{session: s}, nil
+	return &Backend{
+		session:   s,
+		pathCache: make(map[string]cachedPathSegments),
+	}, nil
 }
 
 func (b *Backend) DisplayName() string {
@@ -48,7 +84,7 @@ func (b *Backend) DisplayName() string {
 func (b *Backend) BackendType() string { return "vcenter" }
 
 func (b *Backend) Capabilities() manager.Capabilities {
-	return manager.Capabilities{GuestOps: true, Inventory: true, ToolsInstall: true}
+	return manager.Capabilities{GuestOps: true, Inventory: true, ToolsInstall: true, Console: true}
 }
 
 func (b *Backend) Disconnect(ctx context.Context) error {
@@ -63,11 +99,6 @@ func (b *Backend) ListVMs(ctx context.Context) ([]manager.VMInfo, error) {
 		return nil, err
 	}
 
-	hierarchy, err := b.inventoryHierarchy(ctx)
-	if err != nil {
-		return nil, err
-	}
-
 	m := view.NewManager(client.Client)
 	v, err := m.CreateContainerView(ctx, client.ServiceContent.RootFolder, []string{"VirtualMachine"}, true)
 	if err != nil {
@@ -77,159 +108,213 @@ func (b *Backend) ListVMs(ctx context.Context) ([]manager.VMInfo, error) {
 
 	var vms []mo.VirtualMachine
 	err = v.Retrieve(ctx, []string{"VirtualMachine"}, []string{
+		"name",
 		"config.name", "config.guestFullName",
 		"config.hardware.numCPU", "config.hardware.memoryMB",
-		"runtime.powerState", "guest.toolsStatus", "guest.ipAddress",
+		"runtime.powerState", "guest.toolsStatus", "guest.guestOperationsReady", "guest.ipAddress",
 		"parent", "parentVApp",
 	}, &vms)
 	if err != nil {
 		return nil, fmt.Errorf("listing VMs: %w", err)
 	}
 
+	pathSegmentsByParent, err := b.resolveVMParentPathSegments(ctx, client, vms)
+	if err != nil {
+		return nil, err
+	}
+
 	out := make([]manager.VMInfo, 0, len(vms))
 	for _, obj := range vms {
-		out = append(out, toVMInfo(obj, hierarchy.pathSegments(vmParentRef(obj))))
+		out = append(out, toVMInfo(obj, pathSegmentsByParent[pathKey(vmParentRef(obj))], nil))
 	}
 	return out, nil
 }
 
-func toVMInfo(obj mo.VirtualMachine, pathSegments []string) manager.VMInfo {
+func toVMInfo(obj mo.VirtualMachine, pathSegments []string, distributedPortgroupsByKey map[string]vCenterDistributedPortgroupRef) manager.VMInfo {
 	info := manager.VMInfo{
 		Ref:          obj.Reference().Value,
 		PathSegments: pathSegments,
 		DisplayPath:  strings.Join(pathSegments, " / "),
 		PowerState:   string(obj.Runtime.PowerState),
 	}
+	if name := strings.TrimSpace(obj.Name); name != "" {
+		info.Name = name
+	}
 	if obj.Config != nil {
-		info.Name = obj.Config.Name
+		if info.Name == "" {
+			info.Name = obj.Config.Name
+		}
 		info.GuestOS = obj.Config.GuestFullName
 		info.NumCPU = obj.Config.Hardware.NumCPU
 		info.MemoryMB = obj.Config.Hardware.MemoryMB
+		info.Firmware = formatVCenterFirmware(obj.Config.Firmware)
+		info.HardwareVersion = obj.Config.Version
+		info.UUID = obj.Config.Uuid
+		info.Notes = strings.TrimSpace(obj.Config.Annotation)
 	}
 	if obj.Guest != nil {
 		info.ToolsStatus = string(obj.Guest.ToolsStatus)
+		if obj.Guest.GuestOperationsReady != nil {
+			info.GuestOpsReady = *obj.Guest.GuestOperationsReady
+		}
 		info.IPAddress = obj.Guest.IpAddress
+		info.GuestHostname = obj.Guest.HostName
+		if info.HardwareVersion == "" {
+			info.HardwareVersion = obj.Guest.HwVersion
+		}
 	}
+	info.NetworkAdapters = buildVCenterNetworkAdapters(obj, distributedPortgroupsByKey)
 	return info
 }
 
-type inventoryNode struct {
-	name   string
-	parent *types.ManagedObjectReference
+func normalizeVCenterFirmware(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "bios":
+		return "bios"
+	case "efi", "uefi":
+		return "efi"
+	default:
+		return strings.ToLower(strings.TrimSpace(raw))
+	}
 }
 
-type vmInventoryHierarchy struct {
-	nodes      map[string]inventoryNode
-	vmRootKeys map[string]struct{}
+func formatVCenterFirmware(raw string) string {
+	switch normalizeVCenterFirmware(raw) {
+	case "efi":
+		return "UEFI"
+	case "bios":
+		return "BIOS"
+	default:
+		return raw
+	}
 }
 
-func (h vmInventoryHierarchy) pathSegments(parent *types.ManagedObjectReference) []string {
-	if parent == nil {
+type vCenterGuestNICDetails struct {
+	network     string
+	ipAddresses []string
+}
+
+func buildVCenterNetworkAdapters(obj mo.VirtualMachine, distributedPortgroupsByKey map[string]vCenterDistributedPortgroupRef) []manager.VMNetworkAdapter {
+	if obj.Config == nil || len(obj.Config.Hardware.Device) == 0 {
 		return nil
 	}
 
-	var path []string
-	for current := parent; current != nil; {
-		key := inventoryRefKey(*current)
-		if _, skip := h.vmRootKeys[key]; skip {
-			node, ok := h.nodes[key]
-			if !ok {
-				break
-			}
-			current = node.parent
+	guestNICs := vCenterGuestNICDetailsByMAC(obj)
+	devices := object.VirtualDeviceList(obj.Config.Hardware.Device).SelectByType((*types.VirtualEthernetCard)(nil))
+	if len(devices) == 0 {
+		return nil
+	}
+
+	out := make([]manager.VMNetworkAdapter, 0, len(devices))
+	for idx, device := range devices {
+		card, ok := device.(types.BaseVirtualEthernetCard)
+		if !ok {
 			continue
 		}
 
-		node, ok := h.nodes[key]
-		if !ok {
-			break
+		ethernet := card.GetVirtualEthernetCard()
+		macAddress := strings.ToLower(strings.TrimSpace(ethernet.MacAddress))
+		guestDetails := guestNICs[macAddress]
+		networkID, networkName, networkType := describeVCenterNetworkBacking(ethernet.Backing, distributedPortgroupsByKey)
+		if guestDetails.network != "" {
+			networkName = guestDetails.network
 		}
 
-		if node.name != "" {
-			path = append([]string{node.name}, path...)
+		label := fmt.Sprintf("Network adapter %d", idx+1)
+		if ethernet.DeviceInfo != nil {
+			if desc := ethernet.DeviceInfo.GetDescription(); desc != nil && desc.Label != "" {
+				label = desc.Label
+			}
 		}
-		current = node.parent
+
+		connected := true
+		if ethernet.Connectable != nil {
+			connected = ethernet.Connectable.Connected
+		}
+
+		out = append(out, manager.VMNetworkAdapter{
+			ID:          fmt.Sprint(ethernet.Key),
+			Label:       label,
+			NetworkID:   networkID,
+			Network:     networkName,
+			NetworkType: networkType,
+			MACAddress:  macAddress,
+			Connected:   connected,
+			IPAddresses: append([]string(nil), guestDetails.ipAddresses...),
+		})
 	}
 
-	return path
+	return out
 }
 
-func (b *Backend) inventoryHierarchy(ctx context.Context) (vmInventoryHierarchy, error) {
-	client, err := b.session.Client()
-	if err != nil {
-		return vmInventoryHierarchy{}, err
+func vCenterGuestNICDetailsByMAC(obj mo.VirtualMachine) map[string]vCenterGuestNICDetails {
+	if obj.Guest == nil || len(obj.Guest.Net) == 0 {
+		return nil
 	}
 
-	m := view.NewManager(client.Client)
-
-	folderView, err := m.CreateContainerView(ctx, client.ServiceContent.RootFolder, []string{"Folder"}, true)
-	if err != nil {
-		return vmInventoryHierarchy{}, fmt.Errorf("creating folder view: %w", err)
-	}
-	defer folderView.Destroy(ctx)
-
-	datacenterView, err := m.CreateContainerView(ctx, client.ServiceContent.RootFolder, []string{"Datacenter"}, true)
-	if err != nil {
-		return vmInventoryHierarchy{}, fmt.Errorf("creating datacenter view: %w", err)
-	}
-	defer datacenterView.Destroy(ctx)
-
-	vAppView, err := m.CreateContainerView(ctx, client.ServiceContent.RootFolder, []string{"VirtualApp"}, true)
-	if err != nil {
-		return vmInventoryHierarchy{}, fmt.Errorf("creating vApp view: %w", err)
-	}
-	defer vAppView.Destroy(ctx)
-
-	var folders []mo.Folder
-	if err := folderView.Retrieve(ctx, []string{"Folder"}, []string{"name", "parent"}, &folders); err != nil {
-		return vmInventoryHierarchy{}, fmt.Errorf("listing folders: %w", err)
-	}
-
-	var datacenters []mo.Datacenter
-	if err := datacenterView.Retrieve(ctx, []string{"Datacenter"}, []string{"name", "parent", "vmFolder"}, &datacenters); err != nil {
-		return vmInventoryHierarchy{}, fmt.Errorf("listing datacenters: %w", err)
-	}
-
-	var vApps []mo.VirtualApp
-	if err := vAppView.Retrieve(ctx, []string{"VirtualApp"}, []string{"name", "parentFolder", "parentVApp"}, &vApps); err != nil {
-		return vmInventoryHierarchy{}, fmt.Errorf("listing vApps: %w", err)
-	}
-
-	hierarchy := vmInventoryHierarchy{
-		nodes:      make(map[string]inventoryNode, len(folders)+len(datacenters)+len(vApps)),
-		vmRootKeys: make(map[string]struct{}, len(datacenters)),
-	}
-
-	for _, folder := range folders {
-		hierarchy.nodes[inventoryRefKey(folder.Reference())] = inventoryNode{
-			name:   folder.Name,
-			parent: folder.Parent,
+	out := make(map[string]vCenterGuestNICDetails, len(obj.Guest.Net))
+	for _, nic := range obj.Guest.Net {
+		macAddress := strings.ToLower(strings.TrimSpace(nic.MacAddress))
+		if macAddress == "" {
+			continue
 		}
+
+		details := out[macAddress]
+		if details.network == "" {
+			details.network = nic.Network
+		}
+		for _, ipAddress := range guestNICIPAddresses(nic) {
+			details.ipAddresses = manager.AppendUnique(details.ipAddresses, ipAddress)
+		}
+		out[macAddress] = details
 	}
 
-	for _, dc := range datacenters {
-		hierarchy.nodes[inventoryRefKey(dc.Reference())] = inventoryNode{
-			name: dc.Name,
-		}
-		hierarchy.vmRootKeys[inventoryRefKey(dc.VmFolder)] = struct{}{}
-	}
-
-	for _, vApp := range vApps {
-		parent := vApp.ParentFolder
-		if vApp.ParentVApp != nil {
-			parent = vApp.ParentVApp
-		}
-		hierarchy.nodes[inventoryRefKey(vApp.Reference())] = inventoryNode{
-			name:   vApp.Name,
-			parent: parent,
-		}
-	}
-
-	return hierarchy, nil
+	return out
 }
 
-func inventoryRefKey(ref types.ManagedObjectReference) string {
-	return ref.Type + ":" + ref.Value
+func guestNICIPAddresses(nic types.GuestNicInfo) []string {
+	var out []string
+	if nic.IpConfig != nil {
+		for _, ip := range nic.IpConfig.IpAddress {
+			if strings.TrimSpace(ip.IpAddress) != "" {
+				out = append(out, ip.IpAddress)
+			}
+		}
+	}
+	if len(out) == 0 {
+		for _, ipAddress := range nic.IpAddress {
+			if strings.TrimSpace(ipAddress) != "" {
+				out = append(out, ipAddress)
+			}
+		}
+	}
+	return out
+}
+
+func describeVCenterNetworkBacking(backing types.BaseVirtualDeviceBackingInfo, distributedPortgroupsByKey map[string]vCenterDistributedPortgroupRef) (string, string, string) {
+	switch typed := backing.(type) {
+	case *types.VirtualEthernetCardNetworkBackingInfo:
+		id := ""
+		if typed.Network != nil {
+			id = vCenterNetworkOptionID(*typed.Network)
+		}
+		return id, typed.DeviceName, "Standard"
+	case *types.VirtualEthernetCardDistributedVirtualPortBackingInfo:
+		portgroup := distributedPortgroupsByKey[typed.Port.PortgroupKey]
+		name := "Distributed port group"
+		id := ""
+		if portgroup.Ref.Type != "" {
+			id = vCenterNetworkOptionID(portgroup.Ref)
+		}
+		if portgroup.Name != "" {
+			name = portgroup.Name
+		}
+		return id, name, "Distributed"
+	case *types.VirtualEthernetCardOpaqueNetworkBackingInfo:
+		return "", typed.OpaqueNetworkId, "Opaque"
+	default:
+		return "", "", ""
+	}
 }
 
 func vmParentRef(obj mo.VirtualMachine) *types.ManagedObjectReference {
@@ -237,6 +322,100 @@ func vmParentRef(obj mo.VirtualMachine) *types.ManagedObjectReference {
 		return obj.ParentVApp
 	}
 	return obj.Parent
+}
+
+func pathKey(ref *types.ManagedObjectReference) string {
+	if ref == nil {
+		return ""
+	}
+	return ref.Type + ":" + ref.Value
+}
+
+func clonePathSegments(segments []string) []string {
+	if len(segments) == 0 {
+		return nil
+	}
+	return append([]string(nil), segments...)
+}
+
+func (b *Backend) cachedInventoryPathSegments(ref *types.ManagedObjectReference) ([]string, bool) {
+	key := pathKey(ref)
+	if key == "" {
+		return nil, true
+	}
+
+	now := time.Now()
+	b.pathCacheMu.RLock()
+	entry, ok := b.pathCache[key]
+	b.pathCacheMu.RUnlock()
+	if !ok || now.After(entry.expiresAt) {
+		return nil, false
+	}
+	return clonePathSegments(entry.segments), true
+}
+
+func (b *Backend) storeInventoryPathSegments(ref *types.ManagedObjectReference, segments []string) {
+	key := pathKey(ref)
+	if key == "" {
+		return
+	}
+
+	b.pathCacheMu.Lock()
+	b.pathCache[key] = cachedPathSegments{
+		segments:  clonePathSegments(segments),
+		expiresAt: time.Now().Add(inventoryPathCacheTTL),
+	}
+	b.pathCacheMu.Unlock()
+}
+
+func (b *Backend) inventoryPathSegments(ctx context.Context, client *govmomi.Client, ref *types.ManagedObjectReference) ([]string, error) {
+	if ref == nil {
+		return nil, nil
+	}
+	if segments, ok := b.cachedInventoryPathSegments(ref); ok {
+		return segments, nil
+	}
+
+	path, err := find.InventoryPath(ctx, client.Client, *ref)
+	if err != nil {
+		return nil, fmt.Errorf("resolving inventory path: %w", err)
+	}
+	segments := normalizeInventoryPathSegments(path)
+	b.storeInventoryPathSegments(ref, segments)
+	return segments, nil
+}
+
+func (b *Backend) resolveVMParentPathSegments(ctx context.Context, client *govmomi.Client, vms []mo.VirtualMachine) (map[string][]string, error) {
+	out := make(map[string][]string, len(vms))
+	for _, obj := range vms {
+		parent := vmParentRef(obj)
+		key := pathKey(parent)
+		if key == "" {
+			continue
+		}
+		if _, ok := out[key]; ok {
+			continue
+		}
+		segments, err := b.inventoryPathSegments(ctx, client, parent)
+		if err != nil {
+			return nil, err
+		}
+		out[key] = segments
+	}
+	return out, nil
+}
+
+func normalizeInventoryPathSegments(path string) []string {
+	trimmed := strings.Trim(strings.TrimSpace(path), "/")
+	if trimmed == "" {
+		return nil
+	}
+
+	segments := strings.Split(trimmed, "/")
+	if len(segments) >= 2 && segments[1] == "vm" {
+		segments = append(segments[:1], segments[2:]...)
+	}
+	return segments
 }
 
 func (b *Backend) vmObject(ctx context.Context, vmRef string) (*object.VirtualMachine, error) {
@@ -256,54 +435,245 @@ func (b *Backend) GetVM(ctx context.Context, vmRef string) (manager.VMInfo, erro
 
 	var obj mo.VirtualMachine
 	if err := vm.Properties(ctx, vm.Reference(), []string{
+		"name",
 		"config.name", "config.guestFullName",
 		"config.hardware.numCPU", "config.hardware.memoryMB",
-		"runtime.powerState", "guest.toolsStatus", "guest.ipAddress",
+		"config.uuid", "config.version", "config.firmware", "config.annotation",
+		"config.hardware.device",
+		"runtime.powerState", "runtime.host",
+		"guest.toolsStatus", "guest.guestOperationsReady", "guest.ipAddress", "guest.hostName", "guest.net",
+		"datastore",
 		"parent", "parentVApp",
 	}, &obj); err != nil {
 		return manager.VMInfo{}, fmt.Errorf("reading VM properties: %w", err)
 	}
 
-	pathSegments, err := b.vmPathSegments(ctx, obj.Reference())
+	client, err := b.session.Client()
 	if err != nil {
 		return manager.VMInfo{}, err
 	}
 
-	return toVMInfo(obj, pathSegments), nil
+	pathSegments, err := b.inventoryPathSegments(ctx, client, vmParentRef(obj))
+	if err != nil {
+		return manager.VMInfo{}, err
+	}
+
+	var distributedPortgroupsByKey map[string]vCenterDistributedPortgroupRef
+	if obj.Config != nil && hasDistributedVCenterAdapter(obj.Config.Hardware.Device) {
+		distributedPortgroupsByKey, _ = b.distributedPortgroupsByKey(ctx)
+	}
+	info := toVMInfo(obj, pathSegments, distributedPortgroupsByKey)
+	if obj.Runtime.Host != nil {
+		if hostName, err := object.NewHostSystem(client.Client, *obj.Runtime.Host).ObjectName(ctx); err == nil {
+			info.HostName = hostName
+		}
+	}
+	for _, datastoreRef := range obj.Datastore {
+		if datastoreName, err := object.NewDatastore(client.Client, datastoreRef).ObjectName(ctx); err == nil && datastoreName != "" {
+			info.DatastoreNames = manager.AppendUnique(info.DatastoreNames, datastoreName)
+		}
+	}
+
+	return info, nil
 }
 
-func (b *Backend) vmPathSegments(ctx context.Context, vmRef types.ManagedObjectReference) ([]string, error) {
+func (b *Backend) UpdateVMConfig(ctx context.Context, emit jobs.EmitFn, req manager.VMConfigUpdateRequest) error {
+	emit(10, "Loading current VM configuration...")
+	info, err := b.GetVM(ctx, req.VMRef)
+	if err != nil {
+		return err
+	}
+
+	nextName := strings.TrimSpace(req.Name)
+	nextNotes := strings.TrimSpace(req.Notes)
+	currentNotes := strings.TrimSpace(info.Notes)
+	requestedFirmware := normalizeVCenterFirmware(req.Firmware)
+	currentFirmware := normalizeVCenterFirmware(info.Firmware)
+
+	renameNeeded := nextName != "" && nextName != info.Name
+	notesChanged := nextNotes != currentNotes
+	hardwareChanged := req.NumCPU != info.NumCPU || req.MemoryMB != info.MemoryMB || requestedFirmware != currentFirmware
+
+	if hardwareChanged && info.PowerState != "poweredOff" {
+		return fmt.Errorf("CPU, memory, and firmware changes require the VM to be powered off")
+	}
+	if !renameNeeded && !notesChanged && !hardwareChanged {
+		emit(100, "Configuration already matches the requested values.")
+		return nil
+	}
+
+	vm, err := b.vmObject(ctx, req.VMRef)
+	if err != nil {
+		return err
+	}
+
+	if renameNeeded {
+		emit(35, "Renaming VM...")
+		task, err := vm.Rename(ctx, nextName)
+		if err != nil {
+			return fmt.Errorf("renaming VM: %w", err)
+		}
+		if err := task.Wait(ctx); err != nil {
+			return fmt.Errorf("waiting for rename: %w", err)
+		}
+	}
+
+	if notesChanged || hardwareChanged {
+		spec := types.VirtualMachineConfigSpec{}
+		if notesChanged {
+			spec.Annotation = nextNotes
+		}
+		if req.NumCPU != info.NumCPU {
+			spec.NumCPUs = req.NumCPU
+		}
+		if req.MemoryMB != info.MemoryMB {
+			spec.MemoryMB = int64(req.MemoryMB)
+		}
+		if requestedFirmware != currentFirmware {
+			spec.Firmware = requestedFirmware
+		}
+
+		emit(75, "Applying VM configuration changes...")
+		task, err := vm.Reconfigure(ctx, spec)
+		if err != nil {
+			return fmt.Errorf("reconfiguring VM: %w", err)
+		}
+		if err := task.Wait(ctx); err != nil {
+			return fmt.Errorf("waiting for reconfigure: %w", err)
+		}
+	}
+
+	emit(100, "Configuration updated.")
+	return nil
+}
+
+func (b *Backend) ConsoleInfo(ctx context.Context, vmRef string) (manager.ConsoleLaunchInfo, error) {
 	client, err := b.session.Client()
 	if err != nil {
-		return nil, err
+		return manager.ConsoleLaunchInfo{}, err
 	}
 
-	entities, err := mo.Ancestors(ctx, client.Client, client.ServiceContent.PropertyCollector, vmRef)
+	vm, err := b.vmObject(ctx, vmRef)
 	if err != nil {
-		return nil, fmt.Errorf("resolving VM path: %w", err)
+		return manager.ConsoleLaunchInfo{}, err
 	}
 
-	segments := make([]string, 0, len(entities))
-	for i, entity := range entities {
-		switch entity.Reference().Type {
-		case "Datacenter", "VirtualApp":
-			if entity.Name != "" {
-				segments = append(segments, entity.Name)
-			}
-		case "Folder":
-			if entity.Parent == nil {
-				continue
-			}
-			if i > 0 && entities[i-1].Reference().Type == "Datacenter" && entity.Name == "vm" {
-				continue
-			}
-			if entity.Name != "" {
-				segments = append(segments, entity.Name)
+	vmName, err := vm.ObjectName(ctx)
+	if err != nil {
+		return manager.ConsoleLaunchInfo{}, fmt.Errorf("retrieving VM name for console: %w", err)
+	}
+	if vmName == "" {
+		vmName = vmRef
+	}
+
+	cloneTicket, err := session.NewManager(client.Client).AcquireCloneTicket(ctx)
+	if err != nil {
+		return manager.ConsoleLaunchInfo{}, fmt.Errorf("acquiring console session ticket: %w", err)
+	}
+
+	baseURL := client.Client.URL()
+	if baseURL == nil {
+		return manager.ConsoleLaunchInfo{}, fmt.Errorf("determining vCenter URL for console")
+	}
+	consoleURL := *baseURL
+	consoleURL.User = nil
+
+	reportedFQDN, _ := b.reportedVCenterFQDN(ctx, client)
+	consoleHost, hostSource, warnings, err := b.consoleHost(&consoleURL, reportedFQDN)
+	if err != nil {
+		return manager.ConsoleLaunchInfo{}, err
+	}
+
+	thumbprint := ""
+	if strings.EqualFold(consoleURL.Scheme, "https") {
+		var certInfo object.HostCertificateInfo
+		if err := certInfo.FromURL(&consoleURL, nil); err != nil {
+			return manager.ConsoleLaunchInfo{}, fmt.Errorf("retrieving vCenter certificate thumbprint: %w", err)
+		}
+		thumbprint = certInfo.ThumbprintSHA1
+	}
+
+	consoleURL.Path = "/ui/webconsole.html"
+	consoleURL.RawQuery = url.Values{
+		"vmId":          []string{vm.Reference().Value},
+		"vmName":        []string{vmName},
+		"serverGuid":    []string{client.ServiceContent.About.InstanceUuid},
+		"host":          []string{consoleHost},
+		"sessionTicket": []string{cloneTicket},
+		"thumbprint":    []string{thumbprint},
+	}.Encode()
+
+	return manager.ConsoleLaunchInfo{
+		URL:               consoleURL.String(),
+		VMRef:             vmRef,
+		VMID:              vm.Reference().Value,
+		VMName:            vmName,
+		ServerGUID:        client.ServiceContent.About.InstanceUuid,
+		VCenterURL:        consoleURL.Scheme + "://" + consoleURL.Host,
+		ConnectedHost:     strings.TrimSpace(consoleURL.Hostname()),
+		ReportedFQDN:      reportedFQDN,
+		ConsoleHost:       consoleHost,
+		ConsoleHostSource: hostSource,
+		Thumbprint:        thumbprint,
+		TicketPreview:     ticketPreview(cloneTicket),
+		Warnings:          warnings,
+	}, nil
+}
+
+func (b *Backend) reportedVCenterFQDN(ctx context.Context, client *govmomi.Client) (string, error) {
+	if client.ServiceContent.Setting != nil {
+		optionManager := object.NewOptionManager(client.Client, *client.ServiceContent.Setting)
+		if values, err := optionManager.Query(ctx, "VirtualCenter.FQDN"); err == nil && len(values) > 0 {
+			if optionValue := values[0].GetOptionValue(); optionValue != nil {
+				if value, ok := optionValue.Value.(string); ok {
+					if value = strings.TrimSpace(value); value != "" {
+						return value, nil
+					}
+				}
 			}
 		}
 	}
 
-	return segments, nil
+	return "", nil
+}
+
+func (b *Backend) consoleHost(baseURL *url.URL, reportedFQDN string) (string, string, []string, error) {
+	var warnings []string
+
+	connectedHost := ""
+	if baseURL != nil {
+		connectedHost = strings.TrimSpace(baseURL.Hostname())
+	}
+
+	if reportedFQDN != "" {
+		if connectedHost != "" && !strings.EqualFold(reportedFQDN, connectedHost) {
+			warnings = append(warnings, fmt.Sprintf(
+				"vCenter reports FQDN %q while the current session is connected to %q; the console link is using the vCenter-reported host.",
+				reportedFQDN,
+				connectedHost,
+			))
+		}
+		return reportedFQDN, consoleHostSourceReportedFQDN, warnings, nil
+	}
+
+	if connectedHost != "" {
+		return connectedHost, consoleHostSourceConnectedHost, warnings, nil
+	}
+
+	if host := strings.TrimSpace((&url.URL{Host: b.session.Host()}).Hostname()); host != "" {
+		warnings = append(warnings, "xman could not recover the original connection hostname, so it fell back to the stored session host.")
+		return host, consoleHostSourceSessionHost, warnings, nil
+	}
+
+	return "", "", warnings, fmt.Errorf("determining vCenter console host")
+}
+
+func ticketPreview(ticket string) string {
+	ticket = strings.TrimSpace(ticket)
+	if len(ticket) <= 12 {
+		return ticket
+	}
+	return ticket[:6] + "..." + ticket[len(ticket)-4:]
 }
 
 func (b *Backend) PowerOn(ctx context.Context, vmRef string) error {
@@ -477,7 +847,7 @@ func (b *Backend) Upload(ctx context.Context, emit jobs.EmitFn, req manager.Uplo
 	}
 	emit(20, fmt.Sprintf("Uploading %s...", filepath.Base(req.LocalPath)))
 	if err := tools.Upload(ctx, f, req.GuestPath, gsoap.DefaultUpload, fileAttrs, true); err != nil {
-		return fmt.Errorf("uploading file: %w", err)
+		return wrapGuestOpsError("uploading file", err)
 	}
 
 	emit(100, "Upload complete.")
@@ -493,7 +863,7 @@ func (b *Backend) Download(ctx context.Context, emit jobs.EmitFn, req manager.Do
 	emit(10, "Copying file from guest...")
 	src, _, err := tools.Download(ctx, req.GuestPath)
 	if err != nil {
-		return fmt.Errorf("downloading file: %w", err)
+		return wrapGuestOpsError("downloading file", err)
 	}
 	defer src.Close()
 
@@ -527,7 +897,7 @@ func (b *Backend) GuestRun(ctx context.Context, emit jobs.EmitFn, req manager.Ru
 
 	pid, err := tools.ProcessManager.StartProgram(ctx, tools.Authentication, &spec)
 	if err != nil {
-		return fmt.Errorf("starting command: %w", err)
+		return wrapGuestOpsError("starting command", err)
 	}
 
 	exitCode, err := waitForGuestProcess(ctx, emit, tools, pid)
@@ -541,7 +911,7 @@ func (b *Backend) GuestRun(ctx context.Context, emit jobs.EmitFn, req manager.Ru
 		return err
 	}
 
-	output := normalizeGuestRunOutput(data)
+	output := executil.NormalizeCapturedOutput(data)
 	if exitCode != 0 {
 		emit(95, fmt.Sprintf("%s\n\n[exit code: %d]", output, exitCode))
 		emit(100, "Command finished with non-zero exit status.")
@@ -562,7 +932,7 @@ func (b *Backend) newToolboxClient(ctx context.Context, vmRef, username, passwor
 	auth := &types.NamePasswordAuthentication{Username: username, Password: password}
 	tools, err := toolbox.NewClient(ctx, client.Client, ref, auth)
 	if err != nil {
-		return nil, fmt.Errorf("creating guest toolbox client: %w", err)
+		return nil, wrapGuestOpsError("creating guest toolbox client", err)
 	}
 	return tools, nil
 }
@@ -598,7 +968,7 @@ func waitForGuestProcess(ctx context.Context, emit jobs.EmitFn, tools *toolbox.C
 
 		procs, err := tools.ProcessManager.ListProcesses(ctx, tools.Authentication, []int64{pid})
 		if err != nil {
-			return -1, fmt.Errorf("checking process status: %w", err)
+			return -1, wrapGuestOpsError("checking process status", err)
 		}
 		if len(procs) > 0 && procs[0].ExitCode != -1 {
 			return procs[0].ExitCode, nil
@@ -628,7 +998,7 @@ func downloadGuestFile(ctx context.Context, tools *toolbox.Client, guestPath str
 			}
 			lastErr = fmt.Errorf("reading output: %w", readErr)
 		} else {
-			lastErr = fmt.Errorf("downloading output: %w", err)
+			lastErr = wrapGuestOpsError("downloading output", err)
 		}
 
 		if ctx.Err() != nil {
@@ -641,17 +1011,6 @@ func downloadGuestFile(ctx context.Context, tools *toolbox.Client, guestPath str
 	}
 }
 
-func normalizeGuestRunOutput(data []byte) string {
-	output := strings.TrimSpace(string(data))
-	if len(output) > 16*1024 {
-		output = output[:16*1024] + "\n[output truncated]"
-	}
-	if output == "" {
-		return "(no output)"
-	}
-	return output
-}
-
 func terminateGuestProcess(tools *toolbox.Client, pid int64) {
 	killCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -659,27 +1018,39 @@ func terminateGuestProcess(tools *toolbox.Client, pid int64) {
 }
 
 type toolsInstallState struct {
-	guestOS     string
-	toolsStatus types.VirtualMachineToolsStatus
-	poweredOn   bool
-	hasGuest    bool
+	guestOS               string
+	toolsStatus           types.VirtualMachineToolsStatus
+	poweredOn             bool
+	hasGuest              bool
+	guestOpsReady         bool
+	toolsInstallerMounted bool
 }
 
 func readToolsInstallState(ctx context.Context, vm *object.VirtualMachine) (toolsInstallState, error) {
 	var obj mo.VirtualMachine
-	if err := vm.Properties(ctx, vm.Reference(), []string{"runtime.powerState", "guest.toolsStatus", "config.guestFullName"}, &obj); err != nil {
+	if err := vm.Properties(ctx, vm.Reference(), []string{
+		"runtime.powerState",
+		"runtime.toolsInstallerMounted",
+		"guest.toolsStatus",
+		"guest.guestOperationsReady",
+		"config.guestFullName",
+	}, &obj); err != nil {
 		return toolsInstallState{}, fmt.Errorf("reading VM properties: %w", err)
 	}
 
 	state := toolsInstallState{
-		poweredOn: obj.Runtime.PowerState == types.VirtualMachinePowerStatePoweredOn,
-		hasGuest:  obj.Guest != nil,
+		poweredOn:             obj.Runtime.PowerState == types.VirtualMachinePowerStatePoweredOn,
+		hasGuest:              obj.Guest != nil,
+		toolsInstallerMounted: obj.Runtime.ToolsInstallerMounted,
 	}
 	if obj.Config != nil {
 		state.guestOS = obj.Config.GuestFullName
 	}
 	if obj.Guest != nil {
 		state.toolsStatus = obj.Guest.ToolsStatus
+		if obj.Guest.GuestOperationsReady != nil {
+			state.guestOpsReady = *obj.Guest.GuestOperationsReady
+		}
 	}
 
 	return state, nil
@@ -689,9 +1060,6 @@ func validateToolsInstallState(state toolsInstallState) error {
 	if !state.poweredOn {
 		return fmt.Errorf("VM must be powered on to install VMware Tools")
 	}
-	if state.guestOS != "" && !manager.IsWindows(state.guestOS) {
-		return fmt.Errorf("bundled VMware Tools is not recommended for Linux/macOS guests; install open-vm-tools via the guest package manager instead")
-	}
 	return nil
 }
 
@@ -700,7 +1068,7 @@ func mountToolsInstaller(ctx context.Context, emit jobs.EmitFn, vm *object.Virtu
 	if err := vm.MountToolsInstaller(ctx); err != nil {
 		return fmt.Errorf("mounting tools installer: %w", err)
 	}
-	emit(100, "VMware Tools ISO mounted. Open the CD-ROM drive inside the guest and run setup64.exe (or setup.exe on 32-bit) to complete installation.")
+	emit(35, "VMware Tools installer mounted.")
 	return nil
 }
 
@@ -708,19 +1076,67 @@ func upgradeTools(ctx context.Context, emit jobs.EmitFn, vm *object.VirtualMachi
 	emit(10, "Requesting VMware Tools upgrade from vSphere...")
 	task, err := vm.UpgradeTools(ctx, "")
 	if err != nil {
-		emit(50, "Automatic upgrade unavailable — mounting VMware Tools installer...")
-		if mountErr := mountToolsInstaller(ctx, emit, vm); mountErr != nil {
-			return fmt.Errorf("upgrade tools: %w; mount installer fallback: %w", err, mountErr)
-		}
-		return nil
+		return fmt.Errorf("requesting VMware Tools upgrade: %w", err)
 	}
 
 	emit(50, "Installing VMware Tools, this may take a few minutes...")
 	if err := task.Wait(ctx); err != nil {
 		return fmt.Errorf("VMware Tools installation task failed: %w", err)
 	}
-	emit(100, "VMware Tools installed successfully.")
 	return nil
+}
+
+func waitForGuestOperationsReady(ctx context.Context, emit jobs.EmitFn, vm *object.VirtualMachine, timeout time.Duration, progress int) (toolsInstallState, bool, error) {
+	ticker := time.NewTicker(guestOpsReadyPollInterval)
+	timer := time.NewTimer(timeout)
+	defer ticker.Stop()
+	defer timer.Stop()
+
+	var lastState toolsInstallState
+	for {
+		state, err := readToolsInstallState(ctx, vm)
+		if err != nil {
+			return state, false, err
+		}
+		lastState = state
+		if state.guestOpsReady {
+			return state, true, nil
+		}
+
+		message := "Waiting for VMware guest operations to become ready..."
+		if state.toolsInstallerMounted {
+			message = "Waiting for VMware Tools to finish starting inside the guest..."
+		} else if state.toolsStatus == types.VirtualMachineToolsStatusToolsNotInstalled {
+			message = "Waiting for VMware Tools installation to start in the guest..."
+		}
+		emit(progress, message)
+
+		select {
+		case <-ctx.Done():
+			return lastState, false, ctx.Err()
+		case <-timer.C:
+			return lastState, false, nil
+		case <-ticker.C:
+		}
+	}
+}
+
+func fallbackGuestOpsMessage(state toolsInstallState) string {
+	if manager.IsWindows(state.guestOS) {
+		return "VMware Tools installer is mounted. Windows may still be starting setup in the guest; xman will enable Guest Ops automatically as soon as vSphere reports readiness."
+	}
+	return "VMware Tools installer is mounted. Complete the install inside the guest, and xman will enable Guest Ops automatically once vSphere reports readiness."
+}
+
+func wrapGuestOpsError(action string, err error) error {
+	switch {
+	case fault.Is(err, &types.ToolsUnavailable{}), fault.Is(err, &types.GuestOperationsUnavailable{}):
+		return fmt.Errorf("%s: VMware guest operations are not ready yet. If the VM just booted, wait a bit and try again. If this is a fresh VM, use Bootstrap Guest Ops in VM Info", action)
+	case fault.Is(err, &types.InvalidPowerState{}), fault.Is(err, &types.InvalidState{}):
+		return fmt.Errorf("%s: the VM must be powered on and responsive for VMware guest operations", action)
+	default:
+		return fmt.Errorf("%s: %w", action, err)
+	}
 }
 
 // --- Inventory ---
@@ -823,17 +1239,90 @@ func (b *Backend) InstallTools(ctx context.Context, emit jobs.EmitFn, vmRef stri
 		return err
 	}
 
-	if state.hasGuest && state.toolsStatus == types.VirtualMachineToolsStatusToolsOk {
-		emit(100, "VMware Tools are already up to date.")
+	if state.guestOpsReady && state.toolsStatus != types.VirtualMachineToolsStatusToolsOld {
+		emit(100, "Guest operations are already ready.")
 		return nil
 	}
 
-	// UpgradeTools requires a running guest agent. On a fresh VM with no tools
-	// installed it would create a task that blocks indefinitely. Mount the ISO
-	// directly and let the user run the installer.
-	if !state.hasGuest || state.toolsStatus == types.VirtualMachineToolsStatusToolsNotInstalled {
-		return mountToolsInstaller(ctx, emit, vm)
+	if state.toolsStatus != types.VirtualMachineToolsStatusToolsNotInstalled && !state.guestOpsReady {
+		if state.toolsStatus == types.VirtualMachineToolsStatusToolsNotRunning {
+			emit(15, "VMware Tools are installed but still starting...")
+		} else {
+			emit(15, "VMware Tools look installed, but guest operations are still warming up...")
+		}
+		warmState, ready, err := waitForGuestOperationsReady(ctx, emit, vm, guestOpsWarmupWait, 45)
+		if err != nil {
+			return err
+		}
+		if ready {
+			emit(100, "Guest operations are ready.")
+			return nil
+		}
+		state = warmState
+		if state.toolsStatus == types.VirtualMachineToolsStatusToolsOk {
+			emit(100, "VMware Tools are installed, but guest operations are still starting. xman will enable them automatically once vSphere reports readiness.")
+			return nil
+		}
 	}
 
-	return upgradeTools(ctx, emit, vm)
+	if !state.hasGuest || state.toolsStatus == types.VirtualMachineToolsStatusToolsNotInstalled {
+		if !state.toolsInstallerMounted {
+			if err := mountToolsInstaller(ctx, emit, vm); err != nil {
+				return err
+			}
+		} else {
+			emit(20, "VMware Tools installer is already mounted.")
+		}
+
+		finalState, ready, err := waitForGuestOperationsReady(ctx, emit, vm, guestOpsBootstrapWait, 65)
+		if err != nil {
+			return err
+		}
+		if ready {
+			emit(100, "Guest operations are ready.")
+			return nil
+		}
+
+		emit(100, fallbackGuestOpsMessage(finalState))
+		return nil
+	}
+
+	if err := upgradeTools(ctx, emit, vm); err != nil {
+		if manager.IsWindows(state.guestOS) {
+			emit(55, "Automatic VMware Tools install/upgrade was not available - mounting the installer instead...")
+			if !state.toolsInstallerMounted {
+				if mountErr := mountToolsInstaller(ctx, emit, vm); mountErr != nil {
+					return fmt.Errorf("%w; mount fallback failed: %v", err, mountErr)
+				}
+			}
+			finalState, ready, waitErr := waitForGuestOperationsReady(ctx, emit, vm, guestOpsBootstrapWait, 70)
+			if waitErr != nil {
+				return waitErr
+			}
+			if ready {
+				emit(100, "Guest operations are ready.")
+				return nil
+			}
+			emit(100, fallbackGuestOpsMessage(finalState))
+			return nil
+		}
+		return err
+	}
+
+	finalState, ready, err := waitForGuestOperationsReady(ctx, emit, vm, guestOpsUpgradeWait, 75)
+	if err != nil {
+		return err
+	}
+	if ready {
+		emit(100, "Guest operations are ready.")
+		return nil
+	}
+
+	if finalState.toolsInstallerMounted {
+		emit(100, fallbackGuestOpsMessage(finalState))
+		return nil
+	}
+
+	emit(100, "VMware Tools install/upgrade was requested. Guest operations are still starting, and xman will enable them automatically once vSphere reports readiness.")
+	return nil
 }

@@ -30,6 +30,7 @@ export namespace config {
 	    guestOps: boolean;
 	    inventory: boolean;
 	    toolsInstall: boolean;
+	    console: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConnectionInfo(source);
@@ -42,17 +43,18 @@ export namespace config {
 	        this.guestOps = source["guestOps"];
 	        this.inventory = source["inventory"];
 	        this.toolsInstall = source["toolsInstall"];
+	        this.console = source["console"];
 	    }
 	}
 	export class GuestCredential {
 	    label: string;
 	    username: string;
 	    password: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new GuestCredential(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.label = source["label"];
@@ -63,11 +65,11 @@ export namespace config {
 	export class GuestCredentialMeta {
 	    label: string;
 	    username: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new GuestCredentialMeta(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.label = source["label"];
@@ -90,6 +92,93 @@ export namespace config {
 	        this.algorithm = source["algorithm"];
 	        this.defaultUser = source["defaultUser"];
 	        this.publicKey = source["publicKey"];
+	    }
+	}
+	export class ScriptInfo {
+	    id: string;
+	    name: string;
+	    filename: string;
+	    kind: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ScriptInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.filename = source["filename"];
+	        this.kind = source["kind"];
+	    }
+	}
+	export class ScriptCatalog {
+	    directory: string;
+	    scripts: ScriptInfo[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ScriptCatalog(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.directory = source["directory"];
+	        this.scripts = this.convertValues(source["scripts"], ScriptInfo);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	export class ScriptSaveRequest {
+	    currentID: string;
+	    filename: string;
+	    content: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ScriptSaveRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.currentID = source["currentID"];
+	        this.filename = source["filename"];
+	        this.content = source["content"];
+	    }
+	}
+	export class StoredScript {
+	    id: string;
+	    name: string;
+	    filename: string;
+	    kind: string;
+	    content: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new StoredScript(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.filename = source["filename"];
+	        this.kind = source["kind"];
+	        this.content = source["content"];
 	    }
 	}
 
@@ -187,6 +276,84 @@ export namespace jobs {
 
 export namespace manager {
 	
+	export class EndpointCheck {
+	    name: string;
+	    address: string;
+	    reachable: boolean;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EndpointCheck(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.address = source["address"];
+	        this.reachable = source["reachable"];
+	        this.error = source["error"];
+	    }
+	}
+	export class ConsoleLaunchInfo {
+	    url: string;
+	    displayUrl: string;
+	    vmRef: string;
+	    vmId: string;
+	    vmName: string;
+	    serverGuid: string;
+	    vcenterUrl: string;
+	    connectedHost: string;
+	    reportedFqdn: string;
+	    consoleHost: string;
+	    consoleHostSource: string;
+	    thumbprint?: string;
+	    ticketPreview: string;
+	    warnings: string[];
+	    vcenterCheck: EndpointCheck;
+	    consoleHostCheck: EndpointCheck;
+	
+	    static createFrom(source: any = {}) {
+	        return new ConsoleLaunchInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.url = source["url"];
+	        this.displayUrl = source["displayUrl"];
+	        this.vmRef = source["vmRef"];
+	        this.vmId = source["vmId"];
+	        this.vmName = source["vmName"];
+	        this.serverGuid = source["serverGuid"];
+	        this.vcenterUrl = source["vcenterUrl"];
+	        this.connectedHost = source["connectedHost"];
+	        this.reportedFqdn = source["reportedFqdn"];
+	        this.consoleHost = source["consoleHost"];
+	        this.consoleHostSource = source["consoleHostSource"];
+	        this.thumbprint = source["thumbprint"];
+	        this.ticketPreview = source["ticketPreview"];
+	        this.warnings = source["warnings"];
+	        this.vcenterCheck = this.convertValues(source["vcenterCheck"], EndpointCheck);
+	        this.consoleHostCheck = this.convertValues(source["consoleHostCheck"], EndpointCheck);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class CreateSnapshotRequest {
 	    vmRef: string;
 	    name: string;
@@ -273,6 +440,7 @@ export namespace manager {
 	        this.localPath = source["localPath"];
 	    }
 	}
+	
 	export class HostInfo {
 	    ref: string;
 	    name: string;
@@ -556,6 +724,54 @@ export namespace manager {
 	        this.guestOS = source["guestOS"];
 	    }
 	}
+	export class VMConfigUpdateRequest {
+	    vmRef: string;
+	    name: string;
+	    notes: string;
+	    numCPU: number;
+	    memoryMB: number;
+	    firmware: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new VMConfigUpdateRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.vmRef = source["vmRef"];
+	        this.name = source["name"];
+	        this.notes = source["notes"];
+	        this.numCPU = source["numCPU"];
+	        this.memoryMB = source["memoryMB"];
+	        this.firmware = source["firmware"];
+	    }
+	}
+	export class VMNetworkAdapter {
+	    id: string;
+	    label: string;
+	    networkId: string;
+	    network: string;
+	    networkType: string;
+	    macAddress: string;
+	    connected: boolean;
+	    ipAddresses: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new VMNetworkAdapter(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.label = source["label"];
+	        this.networkId = source["networkId"];
+	        this.network = source["network"];
+	        this.networkType = source["networkType"];
+	        this.macAddress = source["macAddress"];
+	        this.connected = source["connected"];
+	        this.ipAddresses = source["ipAddresses"];
+	    }
+	}
 	export class VMInfo {
 	    ref: string;
 	    name: string;
@@ -563,10 +779,20 @@ export namespace manager {
 	    displayPath: string;
 	    powerState: string;
 	    toolsStatus: string;
+	    guestOpsReady: boolean;
 	    guestOS: string;
+	    guestHostname?: string;
 	    ipAddress: string;
 	    numCPU: number;
 	    memoryMB: number;
+	    firmware?: string;
+	    hardwareVersion?: string;
+	    uuid?: string;
+	    notes?: string;
+	    vmxPath?: string;
+	    hostName?: string;
+	    datastoreNames?: string[];
+	    networkAdapters?: VMNetworkAdapter[];
 	
 	    static createFrom(source: any = {}) {
 	        return new VMInfo(source);
@@ -580,11 +806,77 @@ export namespace manager {
 	        this.displayPath = source["displayPath"];
 	        this.powerState = source["powerState"];
 	        this.toolsStatus = source["toolsStatus"];
+	        this.guestOpsReady = source["guestOpsReady"];
 	        this.guestOS = source["guestOS"];
+	        this.guestHostname = source["guestHostname"];
 	        this.ipAddress = source["ipAddress"];
 	        this.numCPU = source["numCPU"];
 	        this.memoryMB = source["memoryMB"];
+	        this.firmware = source["firmware"];
+	        this.hardwareVersion = source["hardwareVersion"];
+	        this.uuid = source["uuid"];
+	        this.notes = source["notes"];
+	        this.vmxPath = source["vmxPath"];
+	        this.hostName = source["hostName"];
+	        this.datastoreNames = source["datastoreNames"];
+	        this.networkAdapters = this.convertValues(source["networkAdapters"], VMNetworkAdapter);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	export class VMNetworkOption {
+	    id: string;
+	    name: string;
+	    type: string;
+	    group?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new VMNetworkOption(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.type = source["type"];
+	        this.group = source["group"];
+	    }
+	}
+	export class VMNetworkUpdateRequest {
+	    vmRef: string;
+	    adapterId: string;
+	    networkId: string;
+	    connected: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new VMNetworkUpdateRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.vmRef = source["vmRef"];
+	        this.adapterId = source["adapterId"];
+	        this.networkId = source["networkId"];
+	        this.connected = source["connected"];
 	    }
 	}
 
 }
+

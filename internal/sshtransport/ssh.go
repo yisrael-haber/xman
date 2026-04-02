@@ -13,6 +13,7 @@ import (
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 	"xman/internal/config"
+	"xman/internal/executil"
 	"xman/internal/jobs"
 )
 
@@ -77,141 +78,114 @@ func cancelOnContext(ctx context.Context, client *ssh.Client, done <-chan struct
 	}
 }
 
-func Run(ctx context.Context, emit jobs.EmitFn, host, keyLabel, command string) error {
+func withKeyClient(ctx context.Context, emit jobs.EmitFn, host, keyLabel string, fn func(client *ssh.Client, meta config.KeyMeta, display string) error) error {
 	client, meta, display, err := dialWithKey(host, keyLabel)
 	if err != nil {
 		return fmt.Errorf("SSH connect: %w", err)
 	}
 	defer client.Close()
 
-	emit(5, fmt.Sprintf("Connecting to %s as %s with key %s...", display, meta.DefaultUser, meta.Label))
+	if emit != nil {
+		emit(5, fmt.Sprintf("Connecting to %s as %s with key %s...", display, meta.DefaultUser, meta.Label))
+	}
 
 	done := make(chan struct{})
 	defer close(done)
 	go cancelOnContext(ctx, client, done)
 
-	session, err := client.NewSession()
-	if err != nil {
-		return fmt.Errorf("SSH session: %w", err)
-	}
-	defer session.Close()
+	return fn(client, meta, display)
+}
 
-	emit(20, "Running command...")
-	raw, err := session.CombinedOutput(command)
+func Run(ctx context.Context, emit jobs.EmitFn, host, keyLabel, command string) error {
+	return withKeyClient(ctx, emit, host, keyLabel, func(client *ssh.Client, _ config.KeyMeta, _ string) error {
+		session, err := client.NewSession()
+		if err != nil {
+			return fmt.Errorf("SSH session: %w", err)
+		}
+		defer session.Close()
 
-	output := strings.TrimSpace(string(raw))
-	if len(output) > 16*1024 {
-		output = output[:16*1024] + "\n[output truncated]"
-	}
-	if output == "" {
-		output = "(no output)"
-	}
+		emit(20, "Running command...")
+		raw, err := session.CombinedOutput(command)
 
-	if err != nil {
-		emit(95, output+"\n\n["+err.Error()+"]")
-		emit(100, "Command finished with non-zero exit status.")
+		output := executil.NormalizeCapturedOutput(raw)
+		if err != nil {
+			emit(95, output+"\n\n["+err.Error()+"]")
+			emit(100, "Command finished with non-zero exit status.")
+			return nil
+		}
+		emit(95, output)
+		emit(100, "Command completed.")
 		return nil
-	}
-	emit(95, output)
-	emit(100, "Command completed.")
-	return nil
+	})
 }
 
 func Upload(ctx context.Context, emit jobs.EmitFn, host, keyLabel, localPath, remotePath string) error {
-	client, meta, display, err := dialWithKey(host, keyLabel)
-	if err != nil {
-		return fmt.Errorf("SSH connect: %w", err)
-	}
-	defer client.Close()
+	return withKeyClient(ctx, emit, host, keyLabel, func(client *ssh.Client, _ config.KeyMeta, _ string) error {
+		sc, err := sftp.NewClient(client)
+		if err != nil {
+			return fmt.Errorf("SFTP client: %w", err)
+		}
+		defer sc.Close()
 
-	emit(5, fmt.Sprintf("Connecting to %s as %s with key %s...", display, meta.DefaultUser, meta.Label))
+		emit(10, fmt.Sprintf("Uploading %s...", localPath))
 
-	done := make(chan struct{})
-	defer close(done)
-	go cancelOnContext(ctx, client, done)
+		src, err := os.Open(localPath)
+		if err != nil {
+			return fmt.Errorf("opening local file: %w", err)
+		}
+		defer src.Close()
 
-	sc, err := sftp.NewClient(client)
-	if err != nil {
-		return fmt.Errorf("SFTP client: %w", err)
-	}
-	defer sc.Close()
+		dst, err := sc.Create(remotePath)
+		if err != nil {
+			return fmt.Errorf("creating remote file: %w", err)
+		}
+		defer dst.Close()
 
-	emit(10, fmt.Sprintf("Uploading %s...", localPath))
-
-	src, err := os.Open(localPath)
-	if err != nil {
-		return fmt.Errorf("opening local file: %w", err)
-	}
-	defer src.Close()
-
-	dst, err := sc.Create(remotePath)
-	if err != nil {
-		return fmt.Errorf("creating remote file: %w", err)
-	}
-	defer dst.Close()
-
-	if _, err := io.Copy(dst, src); err != nil {
-		return fmt.Errorf("uploading: %w", err)
-	}
-	emit(100, "Upload complete.")
-	return nil
+		if _, err := io.Copy(dst, src); err != nil {
+			return fmt.Errorf("uploading: %w", err)
+		}
+		emit(100, "Upload complete.")
+		return nil
+	})
 }
 
 func Download(ctx context.Context, emit jobs.EmitFn, host, keyLabel, remotePath, localPath string) error {
-	client, meta, display, err := dialWithKey(host, keyLabel)
-	if err != nil {
-		return fmt.Errorf("SSH connect: %w", err)
-	}
-	defer client.Close()
+	return withKeyClient(ctx, emit, host, keyLabel, func(client *ssh.Client, _ config.KeyMeta, _ string) error {
+		sc, err := sftp.NewClient(client)
+		if err != nil {
+			return fmt.Errorf("SFTP client: %w", err)
+		}
+		defer sc.Close()
 
-	emit(5, fmt.Sprintf("Connecting to %s as %s with key %s...", display, meta.DefaultUser, meta.Label))
+		emit(10, fmt.Sprintf("Downloading %s...", remotePath))
 
-	done := make(chan struct{})
-	defer close(done)
-	go cancelOnContext(ctx, client, done)
+		src, err := sc.Open(remotePath)
+		if err != nil {
+			return fmt.Errorf("opening remote file: %w", err)
+		}
+		defer src.Close()
 
-	sc, err := sftp.NewClient(client)
-	if err != nil {
-		return fmt.Errorf("SFTP client: %w", err)
-	}
-	defer sc.Close()
+		dst, err := os.Create(localPath)
+		if err != nil {
+			return fmt.Errorf("creating local file: %w", err)
+		}
+		defer dst.Close()
 
-	emit(10, fmt.Sprintf("Downloading %s...", remotePath))
-
-	src, err := sc.Open(remotePath)
-	if err != nil {
-		return fmt.Errorf("opening remote file: %w", err)
-	}
-	defer src.Close()
-
-	dst, err := os.Create(localPath)
-	if err != nil {
-		return fmt.Errorf("creating local file: %w", err)
-	}
-	defer dst.Close()
-
-	if _, err := io.Copy(dst, src); err != nil {
-		return fmt.Errorf("downloading: %w", err)
-	}
-	emit(100, "Download complete.")
-	return nil
+		if _, err := io.Copy(dst, src); err != nil {
+			return fmt.Errorf("downloading: %w", err)
+		}
+		emit(100, "Download complete.")
+		return nil
+	})
 }
 
 func VerifyKey(ctx context.Context, host, keyLabel string) error {
-	client, _, _, err := dialWithKey(host, keyLabel)
-	if err != nil {
-		return fmt.Errorf("SSH connect: %w", err)
-	}
-	defer client.Close()
-
-	done := make(chan struct{})
-	defer close(done)
-	go cancelOnContext(ctx, client, done)
-
-	session, err := client.NewSession()
-	if err != nil {
-		return fmt.Errorf("SSH session: %w", err)
-	}
-	session.Close()
-	return nil
+	return withKeyClient(ctx, nil, host, keyLabel, func(client *ssh.Client, _ config.KeyMeta, _ string) error {
+		session, err := client.NewSession()
+		if err != nil {
+			return fmt.Errorf("SSH session: %w", err)
+		}
+		session.Close()
+		return nil
+	})
 }

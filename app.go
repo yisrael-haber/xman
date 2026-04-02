@@ -119,6 +119,20 @@ func (a *App) SaveFileDialog(title, defaultFilename string) (string, error) {
 	})
 }
 
+func (a *App) OpenVMConsole(vmRef string) error {
+	consoleURL, err := a.Manager.VMConsoleURL(vmRef)
+	if err != nil {
+		return err
+	}
+
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	runtime.BrowserOpenURL(ctx, consoleURL)
+	return nil
+}
+
 // --- SSH Key Management ---
 
 func (a *App) CreateSSHKey(label, algorithm, defaultUser string) (config.KeyMeta, error) {
@@ -153,4 +167,22 @@ func (a *App) UpdateGuestCredential(currentLabel, newLabel, username, password s
 
 func (a *App) DeleteGuestCredential(label string) error {
 	return config.DeleteGuestCredential(label)
+}
+
+// --- Stored Script Management ---
+
+func (a *App) ListScripts() (config.ScriptCatalog, error) {
+	return config.ListScripts()
+}
+
+func (a *App) GetScript(id string) (config.StoredScript, error) {
+	return config.LoadScript(id)
+}
+
+func (a *App) SaveScript(req config.ScriptSaveRequest) (config.StoredScript, error) {
+	return config.SaveScript(req)
+}
+
+func (a *App) DeleteScript(id string) error {
+	return config.DeleteScript(id)
 }

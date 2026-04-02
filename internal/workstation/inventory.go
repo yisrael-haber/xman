@@ -230,10 +230,25 @@ func vmlistPathSegments(parentID string, byItemID map[string]*vmlistRecord) []st
 
 // vmxInfo holds the fields we care about from a .vmx file.
 type vmxInfo struct {
-	DisplayName string
-	GuestOS     string
-	NumCPU      int32
-	MemoryMB    int32
+	DisplayName     string
+	GuestOS         string
+	NumCPU          int32
+	MemoryMB        int32
+	Notes           string
+	Firmware        string
+	HardwareVersion string
+	UUID            string
+	NetworkAdapters []vmxNetworkAdapter
+}
+
+type vmxNetworkAdapter struct {
+	ID          string
+	Label       string
+	NetworkID   string
+	Network     string
+	NetworkType string
+	MACAddress  string
+	Connected   bool
 }
 
 // parseVMX reads a .vmx file and extracts display name and hardware info.
@@ -247,8 +262,13 @@ func parseVMX(path string) (vmxInfo, error) {
 	kvs := parseKeyValue(f)
 
 	info := vmxInfo{
-		DisplayName: kvs["displayName"],
-		GuestOS:     kvs["guestOS"],
+		DisplayName:     kvs["displayName"],
+		GuestOS:         kvs["guestOS"],
+		Notes:           cleanVMXAnnotation(kvs["annotation"]),
+		Firmware:        formatVMXFirmware(kvs["firmware"]),
+		HardwareVersion: formatVMXHardwareVersion(kvs["virtualHW.version"]),
+		UUID:            firstNonEmpty(kvs["uuid.bios"], kvs["uuid.location"]),
+		NetworkAdapters: parseVMXNetworkAdapters(kvs),
 	}
 
 	if n, err := strconv.Atoi(kvs["numvcpus"]); err == nil {
@@ -262,6 +282,285 @@ func parseVMX(path string) (vmxInfo, error) {
 	}
 
 	return info, nil
+}
+
+func parseVMXNetworkAdapters(kvs map[string]string) []vmxNetworkAdapter {
+	type rawAdapter struct {
+		present           bool
+		hasPresent        bool
+		connectionType    string
+		vnet              string
+		macAddress        string
+		generatedAddress  string
+		startConnected    bool
+		hasStartConnected bool
+	}
+
+	adapters := make(map[string]*rawAdapter)
+	for key, value := range kvs {
+		lowerKey := strings.ToLower(strings.TrimSpace(key))
+		if !strings.HasPrefix(lowerKey, "ethernet") {
+			continue
+		}
+		dot := strings.IndexByte(lowerKey, '.')
+		if dot < 0 {
+			continue
+		}
+
+		id, field := lowerKey[:dot], lowerKey[dot+1:]
+		adapter := adapters[id]
+		if adapter == nil {
+			adapter = &rawAdapter{}
+			adapters[id] = adapter
+		}
+
+		switch field {
+		case "present":
+			adapter.present = strings.EqualFold(value, "true")
+			adapter.hasPresent = true
+		case "connectiontype":
+			adapter.connectionType = strings.ToLower(strings.TrimSpace(value))
+		case "vnet":
+			adapter.vnet = strings.ToLower(strings.TrimSpace(value))
+		case "address":
+			adapter.macAddress = value
+		case "generatedaddress":
+			adapter.generatedAddress = value
+		case "startconnected":
+			adapter.startConnected = !strings.EqualFold(value, "false") && value != "0"
+			adapter.hasStartConnected = true
+		}
+	}
+
+	if len(adapters) == 0 {
+		return nil
+	}
+
+	ids := make([]string, 0, len(adapters))
+	for id := range adapters {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		return ethernetAdapterIndex(ids[i]) < ethernetAdapterIndex(ids[j])
+	})
+
+	out := make([]vmxNetworkAdapter, 0, len(ids))
+	for _, id := range ids {
+		adapter := adapters[id]
+		if adapter == nil || (adapter.hasPresent && !adapter.present) {
+			continue
+		}
+
+		networkName, networkType := formatVMXNetwork(adapter.connectionType, adapter.vnet)
+		macAddress := adapter.macAddress
+		if macAddress == "" {
+			macAddress = adapter.generatedAddress
+		}
+
+		labelIndex := ethernetAdapterIndex(id) + 1
+		if labelIndex <= 0 {
+			labelIndex = len(out) + 1
+		}
+
+		connected := true
+		if adapter.hasStartConnected {
+			connected = adapter.startConnected
+		}
+
+		networkID, networkName, networkType := vmxNetworkSelection(adapter.connectionType, adapter.vnet)
+
+		out = append(out, vmxNetworkAdapter{
+			ID:          id,
+			Label:       fmt.Sprintf("Network adapter %d", labelIndex),
+			NetworkID:   networkID,
+			Network:     networkName,
+			NetworkType: networkType,
+			MACAddress:  macAddress,
+			Connected:   connected,
+		})
+	}
+
+	return out
+}
+
+func ethernetAdapterIndex(id string) int {
+	raw := strings.TrimPrefix(strings.ToLower(id), "ethernet")
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 1 << 30
+	}
+	return n
+}
+
+func formatVMXNetwork(connectionType, vnet string) (string, string) {
+	_, name, kind := vmxNetworkSelection(connectionType, vnet)
+	return name, kind
+}
+
+func vmxNetworkSelection(connectionType, vnet string) (string, string, string) {
+	vnet = strings.ToLower(strings.TrimSpace(vnet))
+	connectionType = strings.ToLower(strings.TrimSpace(connectionType))
+
+	switch {
+	case vnet != "" && strings.HasPrefix(vnet, "vmnet"):
+		switch vnet {
+		case "vmnet0":
+			return "bridged", "Bridged (VMnet0)", "Bridged"
+		case "vmnet1":
+			return "hostonly", "Host-only (VMnet1)", "Host-only"
+		case "vmnet8":
+			return "nat", "NAT (VMnet8)", "NAT"
+		default:
+			return "custom:" + vnet, "Custom (" + strings.ToUpper(vnet[:2]) + vnet[2:] + ")", "Custom"
+		}
+	case connectionType == "bridged":
+		return "bridged", "Bridged (VMnet0)", "Bridged"
+	case connectionType == "hostonly":
+		return "hostonly", "Host-only (VMnet1)", "Host-only"
+	case connectionType == "nat":
+		return "nat", "NAT (VMnet8)", "NAT"
+	case connectionType == "custom":
+		return "", "Custom network", "Custom"
+	default:
+		return "", "", ""
+	}
+}
+
+func vmxNetworkSettings(networkID string) (string, *string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(networkID))
+	switch normalized {
+	case "bridged":
+		return "bridged", nil, nil
+	case "hostonly":
+		return "hostonly", nil, nil
+	case "nat":
+		return "nat", nil, nil
+	}
+	if strings.HasPrefix(normalized, "custom:vmnet") {
+		vnet := strings.TrimPrefix(normalized, "custom:")
+		return "custom", &vnet, nil
+	}
+	return "", nil, fmt.Errorf("unsupported Workstation network %q", networkID)
+}
+
+func formatVMXFirmware(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "":
+		return ""
+	case "efi", "uefi":
+		return "UEFI"
+	case "bios":
+		return "BIOS"
+	default:
+		return raw
+	}
+}
+
+func formatVMXHardwareVersion(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if _, err := strconv.Atoi(raw); err == nil {
+		return "v" + raw
+	}
+	return raw
+}
+
+func cleanVMXAnnotation(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+
+	replacer := strings.NewReplacer(
+		"|0A", "\n",
+		"|0D", "",
+		"&#10;", "\n",
+		"\\n", "\n",
+	)
+	return strings.TrimSpace(replacer.Replace(raw))
+}
+
+func encodeVMXAnnotation(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	replacer := strings.NewReplacer(
+		"\r\n", "\n",
+		"\r", "\n",
+		"\n", "|0A",
+	)
+	return replacer.Replace(raw)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func writeVMXUpdates(path string, updates map[string]*string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	lines := strings.Split(string(data), "\n")
+	applied := make(map[string]bool, len(updates))
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+
+		eq := strings.Index(trimmed, "=")
+		if eq < 0 {
+			continue
+		}
+
+		key := strings.TrimSpace(trimmed[:eq])
+		nextValue, ok := updates[key]
+		if !ok {
+			continue
+		}
+
+		applied[key] = true
+		if nextValue == nil {
+			lines[i] = ""
+			continue
+		}
+
+		lines[i] = fmt.Sprintf(`%s = %s`, key, vmxQuotedValue(*nextValue))
+	}
+
+	for key, nextValue := range updates {
+		if applied[key] || nextValue == nil {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf(`%s = %s`, key, vmxQuotedValue(*nextValue)))
+	}
+
+	content := strings.Join(lines, "\n")
+	if !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, []byte(content), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
+func vmxQuotedValue(value string) string {
+	escaped := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(value)
+	return `"` + escaped + `"`
 }
 
 // parseKeyValue reads a VMware-style key = "value" stream into a map.

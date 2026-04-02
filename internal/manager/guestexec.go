@@ -17,8 +17,8 @@ type RunRequest struct {
 }
 
 func (m *Manager) GuestRun(req RunRequest) string {
-	return m.submitJob("guestexec", "$ "+req.Command, func(ctx context.Context, emit jobs.EmitFn) error {
-		b, err := m.getBackend()
+	return m.submitJob("guestexec", summarizeCommandLabel("$ ", req.Command), func(ctx context.Context, emit jobs.EmitFn) error {
+		b, err := m.getGuestOpsBackend()
 		if err != nil {
 			return err
 		}

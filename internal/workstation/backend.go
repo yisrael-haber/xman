@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"xman/internal/executil"
 	"xman/internal/jobs"
 	"xman/internal/manager"
 )
@@ -42,6 +43,12 @@ type guestRuntimeInfo struct {
 	IPAddress   string
 	RefreshedAt time.Time
 }
+
+var (
+	_ manager.Backend             = (*Backend)(nil)
+	_ manager.GuestOpsBackend     = (*Backend)(nil)
+	_ manager.ToolsInstallBackend = (*Backend)(nil)
+)
 
 const (
 	guestRuntimeCacheTTL     = 15 * time.Second
@@ -92,7 +99,7 @@ func (b *Backend) DisplayName() string { return "Local Workstation" }
 func (b *Backend) BackendType() string { return "workstation" }
 
 func (b *Backend) Capabilities() manager.Capabilities {
-	return manager.Capabilities{GuestOps: true, Inventory: false, ToolsInstall: true}
+	return manager.Capabilities{GuestOps: true, Inventory: false, ToolsInstall: true, Console: false}
 }
 
 func (b *Backend) Disconnect(_ context.Context) error {
@@ -143,16 +150,6 @@ func traceLogCandidates() []string {
 
 	candidates = append(candidates, filepath.Join(os.TempDir(), filename))
 	return candidates
-}
-
-func traceLogPath() string {
-	for _, path := range traceLogCandidates() {
-		if path != "" {
-			return path
-		}
-	}
-	filename := fmt.Sprintf("xman_log_%s.txt", time.Now().Format("20060102_150405"))
-	return filepath.Join(os.TempDir(), filename)
 }
 
 func newTraceLogger(enabled bool) (*log.Logger, io.Closer) {
@@ -310,11 +307,6 @@ func truncateForLog(text string, limit int) string {
 
 // --- vmrun helpers ---
 
-// run executes vmrun with the given args and returns trimmed stdout.
-func (b *Backend) run(args ...string) (string, error) {
-	return b.runContext(context.Background(), args...)
-}
-
 // runContext executes vmrun with the given args and returns trimmed stdout.
 func (b *Backend) runContext(ctx context.Context, args ...string) (string, error) {
 	if ctx == nil {
@@ -372,6 +364,10 @@ func normalizeToolsStatus(raw string) string {
 	default:
 		return "toolsNotRunning"
 	}
+}
+
+func guestOpsReadyFromToolsStatus(status string) bool {
+	return status == "toolsOk" || status == "toolsOld"
 }
 
 func normalizeGuestIP(raw string) string {
@@ -458,7 +454,7 @@ func (b *Backend) loadRuntimeDetails(ctx context.Context, vmx string) (guestRunt
 }
 
 func (b *Backend) vmInfoFromPath(ctx context.Context, vmxPath string, running map[string]struct{}, refreshRuntime bool, metadata *inventoryVM) manager.VMInfo {
-	info := manager.VMInfo{Ref: vmxPath}
+	info := manager.VMInfo{Ref: vmxPath, VMXPath: vmxPath}
 	localVMXPath := localPathForVMX(vmxPath)
 	if metadata != nil {
 		info.PathSegments = append([]string(nil), metadata.PathSegments...)
@@ -473,6 +469,25 @@ func (b *Backend) vmInfoFromPath(ctx context.Context, vmxPath string, running ma
 		info.GuestOS = vmxData.GuestOS
 		info.NumCPU = vmxData.NumCPU
 		info.MemoryMB = vmxData.MemoryMB
+		info.Notes = vmxData.Notes
+		info.Firmware = vmxData.Firmware
+		info.HardwareVersion = vmxData.HardwareVersion
+		info.UUID = vmxData.UUID
+		info.VMXPath = vmxPath
+		if len(vmxData.NetworkAdapters) > 0 {
+			info.NetworkAdapters = make([]manager.VMNetworkAdapter, 0, len(vmxData.NetworkAdapters))
+			for _, adapter := range vmxData.NetworkAdapters {
+				info.NetworkAdapters = append(info.NetworkAdapters, manager.VMNetworkAdapter{
+					ID:          adapter.ID,
+					Label:       adapter.Label,
+					NetworkID:   adapter.NetworkID,
+					Network:     adapter.Network,
+					NetworkType: adapter.NetworkType,
+					MACAddress:  adapter.MACAddress,
+					Connected:   adapter.Connected,
+				})
+			}
+		}
 	} else if metadata != nil && metadata.DisplayName != "" {
 		info.Name = metadata.DisplayName
 	}
@@ -488,6 +503,7 @@ func (b *Backend) vmInfoFromPath(ctx context.Context, vmxPath string, running ma
 		if refreshRuntime {
 			if refreshed, ok := b.loadRuntimeDetails(ctx, vmxPath); ok {
 				info.ToolsStatus = refreshed.ToolsStatus
+				info.GuestOpsReady = guestOpsReadyFromToolsStatus(refreshed.ToolsStatus)
 				info.IPAddress = refreshed.IPAddress
 				b.storeRuntime(vmxPath, refreshed)
 			} else {
@@ -498,6 +514,7 @@ func (b *Backend) vmInfoFromPath(ctx context.Context, vmxPath string, running ma
 		if info.ToolsStatus == "" {
 			info.ToolsStatus = "toolsNotRunning"
 		}
+		info.GuestOpsReady = guestOpsReadyFromToolsStatus(info.ToolsStatus)
 		b.traceEvent("vm_info_ready", "vm", vmLabel(vmxPath), "state", info.PowerState, "tools_status", info.ToolsStatus, "ip_address", info.IPAddress)
 		return info
 	}
@@ -755,15 +772,6 @@ func (b *Backend) GetVM(ctx context.Context, vmRef string) (manager.VMInfo, erro
 	return info, nil
 }
 
-// checkToolsState returns a toolsStatus string for a running VM.
-func (b *Backend) checkToolsState(ctx context.Context, vmx string) string {
-	out, ok := b.queryToolsState(ctx, vmx)
-	if !ok {
-		return "toolsNotRunning"
-	}
-	return out
-}
-
 // isSuspended checks for a .vmss suspend-state file alongside the .vmx.
 func isSuspended(vmx string) bool {
 	dir := filepath.Dir(vmx)
@@ -783,6 +791,165 @@ func (b *Backend) PowerOn(ctx context.Context, vmRef string) error {
 		b.traceEvent("power_on_error", "vm", vmLabel(vmRef), "error", err)
 	}
 	return err
+}
+
+func normalizeRequestedFirmware(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "bios":
+		return "bios"
+	case "efi", "uefi":
+		return "efi"
+	default:
+		return strings.ToLower(strings.TrimSpace(raw))
+	}
+}
+
+func (b *Backend) ListVMNetworkOptions(_ context.Context, vmRef string) ([]manager.VMNetworkOption, error) {
+	if _, err := os.Stat(localPathForVMX(vmRef)); err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("VM %q not found", vmRef)
+		}
+		return nil, fmt.Errorf("checking VMX path: %w", err)
+	}
+	return workstationNetworkOptions()
+}
+
+func (b *Backend) UpdateVMNetwork(ctx context.Context, emit jobs.EmitFn, req manager.VMNetworkUpdateRequest) error {
+	emit(10, "Loading current VM network settings...")
+	info, err := b.GetVM(ctx, req.VMRef)
+	if err != nil {
+		return err
+	}
+	if info.PowerState != "poweredOff" {
+		return fmt.Errorf("Workstation network changes can only be applied while powered off")
+	}
+
+	localVMXPath := localPathForVMX(req.VMRef)
+	current, err := parseVMX(localVMXPath)
+	if err != nil {
+		return fmt.Errorf("reading VMX configuration: %w", err)
+	}
+
+	var adapter *vmxNetworkAdapter
+	for i := range current.NetworkAdapters {
+		if current.NetworkAdapters[i].ID == req.AdapterID {
+			adapter = &current.NetworkAdapters[i]
+			break
+		}
+	}
+	if adapter == nil {
+		return fmt.Errorf("network adapter %q not found", req.AdapterID)
+	}
+
+	connectionType, vnet, err := vmxNetworkSettings(req.NetworkID)
+	if err != nil {
+		return err
+	}
+
+	updates := make(map[string]*string)
+	hasChanges := false
+
+	if adapter.NetworkID != req.NetworkID {
+		value := connectionType
+		updates[req.AdapterID+".connectionType"] = &value
+		updates[req.AdapterID+".vnet"] = vnet
+		hasChanges = true
+	}
+
+	if adapter.Connected != req.Connected {
+		value := "false"
+		if req.Connected {
+			value = "true"
+		}
+		updates[req.AdapterID+".startConnected"] = &value
+		hasChanges = true
+	}
+
+	if !hasChanges {
+		emit(100, "Network attachment already matches the requested values.")
+		return nil
+	}
+
+	emit(55, "Writing VMX network settings...")
+	if err := writeVMXUpdates(localVMXPath, updates); err != nil {
+		return fmt.Errorf("writing VMX configuration: %w", err)
+	}
+
+	b.clearRuntime(req.VMRef)
+	emit(100, "Network attachment updated.")
+	return nil
+}
+
+func (b *Backend) UpdateVMConfig(ctx context.Context, emit jobs.EmitFn, req manager.VMConfigUpdateRequest) error {
+	emit(10, "Loading current VM configuration...")
+	info, err := b.GetVM(ctx, req.VMRef)
+	if err != nil {
+		return err
+	}
+	if info.PowerState != "poweredOff" {
+		return fmt.Errorf("Workstation VM configuration can only be edited while powered off")
+	}
+
+	localVMXPath := localPathForVMX(req.VMRef)
+	current, err := parseVMX(localVMXPath)
+	if err != nil {
+		return fmt.Errorf("reading VMX configuration: %w", err)
+	}
+
+	updates := make(map[string]*string)
+	hasChanges := false
+
+	nextName := strings.TrimSpace(req.Name)
+	if nextName != "" && nextName != current.DisplayName {
+		value := nextName
+		updates["displayName"] = &value
+		hasChanges = true
+	}
+
+	nextNotes := strings.TrimSpace(req.Notes)
+	if nextNotes != current.Notes {
+		if nextNotes == "" {
+			updates["annotation"] = nil
+		} else {
+			value := encodeVMXAnnotation(nextNotes)
+			updates["annotation"] = &value
+		}
+		hasChanges = true
+	}
+
+	if req.NumCPU != current.NumCPU {
+		value := strconv.Itoa(int(req.NumCPU))
+		updates["numvcpus"] = &value
+		hasChanges = true
+	}
+
+	if req.MemoryMB != current.MemoryMB {
+		value := strconv.Itoa(int(req.MemoryMB))
+		updates["memsize"] = &value
+		hasChanges = true
+	}
+
+	currentFirmware := normalizeRequestedFirmware(current.Firmware)
+	requestedFirmware := normalizeRequestedFirmware(req.Firmware)
+	if requestedFirmware != "" && requestedFirmware != currentFirmware {
+		value := requestedFirmware
+		updates["firmware"] = &value
+		hasChanges = true
+	}
+
+	if !hasChanges {
+		emit(100, "Configuration already matches the requested values.")
+		return nil
+	}
+
+	emit(55, "Writing VMX configuration...")
+	if err := writeVMXUpdates(localVMXPath, updates); err != nil {
+		return fmt.Errorf("writing VMX configuration: %w", err)
+	}
+
+	b.clearRuntime(req.VMRef)
+	emit(100, "Configuration updated.")
+	return nil
 }
 
 func (b *Backend) PowerOff(ctx context.Context, vmRef string) error {
@@ -1038,13 +1205,7 @@ func (b *Backend) GuestRun(ctx context.Context, emit jobs.EmitFn, req manager.Ru
 		return fmt.Errorf("reading output: %w", err)
 	}
 
-	output := strings.TrimSpace(string(data))
-	if len(output) > 16*1024 {
-		output = output[:16*1024] + "\n[output truncated]"
-	}
-	if output == "" {
-		output = "(no output)"
-	}
+	output := executil.NormalizeCapturedOutput(data)
 	if runErr != nil {
 		b.traceEvent("guest_run_nonzero_exit", "vm", vmLabel(req.VMRef), "output_preview", truncateForLog(output, 200), "error", runErr)
 		emit(95, output+"\n\n["+runErr.Error()+"]")
@@ -1059,45 +1220,13 @@ func (b *Backend) GuestRun(ctx context.Context, emit jobs.EmitFn, req manager.Ru
 	return nil
 }
 
-// --- Inventory (unsupported) ---
-
-func (b *Backend) ListHosts(_ context.Context) ([]manager.HostInfo, error) {
-	b.traceEvent("list_hosts_unsupported")
-	return nil, fmt.Errorf("host inventory not available for Workstation")
-}
-
-func (b *Backend) ListDatastores(_ context.Context) ([]manager.DatastoreInfo, error) {
-	b.traceEvent("list_datastores_unsupported")
-	return nil, fmt.Errorf("datastore inventory not available for Workstation")
-}
-
 func (b *Backend) ListNetworks(_ context.Context) (manager.NetworkSummary, error) {
 	started := time.Now()
 	b.traceEvent("list_networks_begin")
-	// Step 1: Enumerate VMware virtual network adapters on the host OS.
-	ifaces, err := net.Interfaces()
+	hostVMnets, err := discoverHostVMnets()
 	if err != nil {
 		b.traceEvent("list_networks_interface_error", "error", err)
-		return manager.NetworkSummary{}, fmt.Errorf("listing network interfaces: %w", err)
-	}
-
-	type ifEntry struct {
-		mtu   int32
-		addrs []string
-	}
-	ifMap := make(map[int]ifEntry)
-	for _, iface := range ifaces {
-		n, ok := parseVMnetNumber(iface.Name)
-		if !ok {
-			continue
-		}
-		e := ifEntry{mtu: int32(iface.MTU)}
-		if addrs, err := iface.Addrs(); err == nil {
-			for _, addr := range addrs {
-				e.addrs = append(e.addrs, addr.String())
-			}
-		}
-		ifMap[n] = e
+		return manager.NetworkSummary{}, err
 	}
 
 	// Step 2: Map VMnet number → VM names by parsing every known VMX file.
@@ -1121,15 +1250,9 @@ func (b *Backend) ListNetworks(_ context.Context) (manager.NetworkSummary, error
 	}
 
 	// Step 3: Assemble sorted switch list.
-	nums := make([]int, 0, len(ifMap))
-	for n := range ifMap {
-		nums = append(nums, n)
-	}
-	sort.Ints(nums)
-
-	switches := make([]manager.SwitchInfo, 0, len(nums))
-	for _, n := range nums {
-		e := ifMap[n]
+	switches := make([]manager.SwitchInfo, 0, len(hostVMnets.numbers))
+	for _, n := range hostVMnets.numbers {
+		e := hostVMnets.details[n]
 		switches = append(switches, manager.SwitchInfo{
 			Name:    fmt.Sprintf("VMnet%d", n),
 			Type:    vmnetType(n),
@@ -1141,6 +1264,77 @@ func (b *Backend) ListNetworks(_ context.Context) (manager.NetworkSummary, error
 
 	b.traceTiming("ListNetworks", started, "switch_count", len(switches))
 	return manager.NetworkSummary{Switches: switches}, nil
+}
+
+func workstationNetworkOptions() ([]manager.VMNetworkOption, error) {
+	options := []manager.VMNetworkOption{
+		{ID: "bridged", Name: "Bridged (VMnet0)", Type: "Bridged"},
+		{ID: "nat", Name: "NAT (VMnet8)", Type: "NAT"},
+		{ID: "hostonly", Name: "Host-only (VMnet1)", Type: "Host-only"},
+	}
+
+	hostVMnets, err := discoverHostVMnets()
+	if err != nil {
+		return nil, err
+	}
+
+	for _, n := range hostVMnets.numbers {
+		if n == 0 || n == 1 || n == 8 {
+			continue
+		}
+		vmnetName := fmt.Sprintf("VMnet%d", n)
+		options = append(options, manager.VMNetworkOption{
+			ID:   "custom:" + strings.ToLower(vmnetName),
+			Name: "Custom (" + vmnetName + ")",
+			Type: "Custom",
+		})
+	}
+
+	return options, nil
+}
+
+type vmnetInterfaceInfo struct {
+	mtu   int32
+	addrs []string
+}
+
+type hostVMnetInventory struct {
+	numbers []int
+	details map[int]vmnetInterfaceInfo
+}
+
+func discoverHostVMnets() (hostVMnetInventory, error) {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return hostVMnetInventory{}, fmt.Errorf("listing network interfaces: %w", err)
+	}
+
+	details := make(map[int]vmnetInterfaceInfo)
+	for _, iface := range ifaces {
+		n, ok := parseVMnetNumber(iface.Name)
+		if !ok {
+			continue
+		}
+
+		info := vmnetInterfaceInfo{mtu: int32(iface.MTU)}
+		if addrs, err := iface.Addrs(); err == nil {
+			for _, addr := range addrs {
+				info.addrs = append(info.addrs, addr.String())
+			}
+		}
+		details[n] = info
+	}
+
+	numbers := make([]int, 0, len(details))
+	for n := range details {
+		numbers = append(numbers, n)
+	}
+	sort.Ints(numbers)
+
+	return hostVMnetInventory{
+		numbers: numbers,
+		details: details,
+	}, nil
 }
 
 // allVMXPaths returns the VMX paths from the configured directory or the default inventory.

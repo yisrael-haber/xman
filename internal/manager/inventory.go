@@ -24,17 +24,17 @@ type DatastoreInfo struct {
 }
 
 func (m *Manager) InventoryHosts() ([]HostInfo, error) {
-	b, err := m.getBackend()
+	b, err := m.getInventoryBackend()
 	if err != nil {
 		return nil, err
 	}
-	return b.ListHosts(m.ctx)
+	return b.ListHosts(m.operationContext())
 }
 
 func (m *Manager) InventoryDatastores() ([]DatastoreInfo, error) {
-	b, err := m.getBackend()
+	b, err := m.getInventoryBackend()
 	if err != nil {
 		return nil, err
 	}
-	return b.ListDatastores(m.ctx)
+	return b.ListDatastores(m.operationContext())
 }

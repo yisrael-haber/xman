@@ -7,6 +7,7 @@ import VMPanel from './features/vms/VMPanel';
 import InventoryPanel from './features/inventory/InventoryPanel';
 import NetworksPanel from './features/networks/NetworksPanel';
 import SSHKeysPanel from './features/sshkeys/SSHKeysPanel';
+import StoredScriptsManager from './features/sshkeys/StoredScriptsManager';
 import { useJobs } from '../hooks/useJobs';
 
 interface Props {
@@ -45,6 +46,7 @@ export default function MainView({ info, onDisconnect }: Props) {
                             onJobStarted={trackJob}
                             toolsInstall={info.toolsInstall}
                             guestOps={info.guestOps}
+                            console={info.console}
                             backendType={info.backendType}
                         />
                     )}
@@ -53,6 +55,11 @@ export default function MainView({ info, onDisconnect }: Props) {
                     )}
                     {activeFeature === 'sshkeys' && (
                         <SSHKeysPanel />
+                    )}
+                    {activeFeature === 'scripts' && (
+                        <div className="vm-detail" style={{ width: '100%' }}>
+                            <StoredScriptsManager />
+                        </div>
                     )}
                     {activeFeature === 'inventory' && info.inventory && (
                         <InventoryPanel />

@@ -23,7 +23,8 @@ export default function SSHKeysPanel() {
             </div>
 
             <div className="tab-content">
-                {activeTab === 'sshkeys' ? <SSHKeysManager /> : <GuestCredentialsManager />}
+                {activeTab === 'sshkeys' && <SSHKeysManager />}
+                {activeTab === 'guestcredentials' && <GuestCredentialsManager />}
             </div>
         </div>
     );

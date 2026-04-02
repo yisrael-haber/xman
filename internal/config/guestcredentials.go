@@ -26,11 +26,11 @@ type GuestCredential struct {
 }
 
 func guestCredentialsDir() (string, error) {
-	dir, err := os.UserConfigDir()
+	dir, err := appConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "xman", "guest-credentials"), nil
+	return filepath.Join(dir, "guest-credentials"), nil
 }
 
 func guestCredentialLabelDir(label string) (string, error) {

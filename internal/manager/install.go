@@ -86,7 +86,7 @@ func cleanupCommand(guestPath, guestOS string) string {
 	return fmt.Sprintf(`rm -f "%s"`, guestPath)
 }
 
-func bestEffortGuestCleanup(b Backend, req RunRequest) {
+func bestEffortGuestCleanup(b GuestOpsBackend, req RunRequest) {
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	noop := func(_ int, _ string) {}
@@ -100,11 +100,17 @@ func bestEffortSSHCleanup(host, keyLabel, command string) {
 	_ = sshtransport.Run(cleanupCtx, noop, host, keyLabel, command)
 }
 
+// InstallCommandPreview derives the default install command the same way the
+// backend install jobs do, so the frontend preview stays aligned.
+func (m *Manager) InstallCommandPreview(localPath, guestOS string) (string, error) {
+	return autoInstallCommand(localPath, guestTempPath(localPath, guestOS), guestOS)
+}
+
 // Install uploads an installer to the guest via VMware Tools and runs it silently.
 func (m *Manager) Install(req InstallRequest) string {
 	filename := filepath.Base(req.LocalPath)
 	return m.submitJob("install", "Install: "+filename, func(ctx context.Context, emit jobs.EmitFn) error {
-		b, err := m.getBackend()
+		b, err := m.getGuestOpsBackend()
 		if err != nil {
 			return err
 		}

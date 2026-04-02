@@ -24,7 +24,7 @@ type SSHTransferRequest struct {
 }
 
 func (m *Manager) SSHRun(req SSHRunRequest) string {
-	return m.submitJob("exec", "SSH: "+req.Command, func(ctx context.Context, emit jobs.EmitFn) error {
+	return m.submitJob("exec", summarizeCommandLabel("SSH: ", req.Command), func(ctx context.Context, emit jobs.EmitFn) error {
 		return sshtransport.Run(ctx, emit, req.Host, req.KeyLabel, req.Command)
 	})
 }
