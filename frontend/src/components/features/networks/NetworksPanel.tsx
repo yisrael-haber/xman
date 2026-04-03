@@ -24,10 +24,10 @@ export default function NetworksPanel() {
     useEffect(() => { load(); }, []);
 
     return (
-        <div className="vm-detail" style={{ width: '100%' }}>
+        <div className="vm-detail panel-shell">
             <div className="tab-bar">
-                <button className="tab tab--active" style={{ pointerEvents: 'none' }}>Networks</button>
-                <button className="icon-btn" style={{ marginLeft: 'auto', marginRight: '0.5rem' }} onClick={load} disabled={loading} title="Refresh">
+                <button className="tab tab--active panel-tab-static" disabled>Networks</button>
+                <button className="icon-btn panel-refresh-btn" onClick={load} disabled={loading} title="Refresh">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <polyline points="23 4 23 10 17 10"/>
                         <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>

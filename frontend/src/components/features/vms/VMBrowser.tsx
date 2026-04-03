@@ -122,6 +122,20 @@ function selectedFolderKeys(selected: manager.VMInfo | null): string[] {
     return selected.pathSegments.map((_, index) => folderKey(selected.pathSegments.slice(0, index + 1)));
 }
 
+function collectFolderKeys(folders: VMFolderNode[]): string[] {
+    const keys: string[] = [];
+
+    function visit(folder: VMFolderNode) {
+        if (folder.path.length > 0) {
+            keys.push(folder.key);
+        }
+        folder.folders.forEach(visit);
+    }
+
+    folders.forEach(visit);
+    return keys;
+}
+
 function normalizeSearch(value: string): string {
     return value.trim().toLowerCase();
 }
@@ -154,41 +168,6 @@ function vmMatchesSearch(vm: manager.VMInfo, query: string): boolean {
         .toLowerCase();
 
     return pathHaystack.includes(query);
-}
-
-function folderMatchesSearch(folder: VMFolderNode, query: string): boolean {
-    if (!query || !folder.name) return false;
-
-    const haystack = [folder.name, folder.path.join(' / ')]
-        .filter(Boolean)
-        .join('\n')
-        .toLowerCase();
-
-    return haystack.includes(query);
-}
-
-function collectSearchExpansionKeys(folders: VMFolderNode[], query: string): string[] {
-    if (!query) return [];
-
-    const keys = new Set<string>();
-
-    function visit(folder: VMFolderNode): boolean {
-        const folderDirectMatch = folderMatchesSearch(folder, query);
-        const childNeedsOpen = folder.folders.some(child => visit(child));
-        const directVMMatch = folder.vms.some(vm => vmSelfMatchesSearch(vm, query));
-        const shouldOpen = folderDirectMatch || childNeedsOpen || directVMMatch;
-
-        if (shouldOpen && folder.path.length > 0) {
-            keys.add(folder.key);
-        }
-        return shouldOpen;
-    }
-
-    for (const folder of folders) {
-        visit(folder);
-    }
-
-    return Array.from(keys);
 }
 
 function PowerDot({ state }: { state: string }) {
@@ -328,7 +307,7 @@ export default function VMBrowser({ vms, selected, loading, error, width, onSele
     const selectedPathKey = folderKey(selected?.pathSegments ?? []);
     const searchExpansionKeys = useMemo(() => (
         normalizedSearch
-            ? collectSearchExpansionKeys(tree, normalizedSearch)
+            ? collectFolderKeys(tree)
             : []
     ), [tree, normalizedSearch]);
     const searchExpansionSignature = searchExpansionKeys.join(FOLDER_KEY_SEPARATOR);
@@ -336,21 +315,27 @@ export default function VMBrowser({ vms, selected, loading, error, width, onSele
     const autoExpandedTopLevelsRef = useRef<Set<string>>(new Set());
     const lastSelectedPathRef = useRef('');
 
+    function addExpandedFolders(keys: string[]) {
+        if (keys.length === 0) {
+            return;
+        }
+
+        setExpandedFolders(prev => {
+            const next = new Set(prev);
+            let changed = false;
+            for (const key of keys) {
+                if (!next.has(key)) {
+                    next.add(key);
+                    changed = true;
+                }
+            }
+            return changed ? next : prev;
+        });
+    }
+
     useEffect(() => {
         if (normalizedSearch) {
-            if (searchExpansionKeys.length === 0) return;
-
-            setExpandedFolders(prev => {
-                const next = new Set(prev);
-                let changed = false;
-                for (const key of searchExpansionKeys) {
-                    if (!next.has(key)) {
-                        next.add(key);
-                        changed = true;
-                    }
-                }
-                return changed ? next : prev;
-            });
+            addExpandedFolders(searchExpansionKeys);
             return;
         }
 
@@ -368,19 +353,7 @@ export default function VMBrowser({ vms, selected, loading, error, width, onSele
             ? [...newTopLevelKeys, ...selectedFolderKeys(selected)]
             : newTopLevelKeys;
 
-        if (keysToOpen.length === 0) return;
-
-        setExpandedFolders(prev => {
-            const next = new Set(prev);
-            let changed = false;
-            for (const key of keysToOpen) {
-                if (!next.has(key)) {
-                    next.add(key);
-                    changed = true;
-                }
-            }
-            return changed ? next : prev;
-        });
+        addExpandedFolders(keysToOpen);
     }, [normalizedSearch, searchExpansionSignature, selected, selectedPathKey, topLevelKeysSignature]);
 
     function toggleFolder(key: string) {
@@ -395,11 +368,18 @@ export default function VMBrowser({ vms, selected, loading, error, width, onSele
         });
     }
 
+    const countLabel = normalizedSearch
+        ? filteredCountLabel(filteredVMs.length)
+        : `${vms.length}`;
+
     return (
         <div className="vm-browser" style={{ width: `${width}px` }}>
             <div className="vm-browser-header">
                 <div className="vm-browser-toolbar">
-                    <span className="vm-browser-title">Virtual Machines</span>
+                    <div className="vm-browser-title-group">
+                        <span className="vm-browser-title">Machines</span>
+                        <span className="vm-browser-count">{countLabel}</span>
+                    </div>
                     <button className="icon-btn" onClick={() => void onRefresh()} title="Refresh" disabled={loading}>
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                             <polyline points="23 4 23 10 17 10"/>
@@ -418,7 +398,7 @@ export default function VMBrowser({ vms, selected, loading, error, width, onSele
                         type="text"
                         value={search}
                         onChange={e => setSearch(e.target.value)}
-                        placeholder="Search names or folders"
+                        placeholder="Search machines"
                         aria-label="Search virtual machines"
                     />
                     {search && (
@@ -436,25 +416,20 @@ export default function VMBrowser({ vms, selected, loading, error, width, onSele
                         </button>
                     )}
                 </div>
-                {normalizedSearch && (
-                    <p className="vm-browser-search-meta">
-                        {filteredVMs.length} match{filteredVMs.length === 1 ? '' : 'es'}
-                    </p>
-                )}
             </div>
 
             {error && <p className="vm-browser-error">{error}</p>}
 
             {loading && vms.length === 0 && (
-                <p className="vm-browser-empty">Loading...</p>
+                <p className="vm-browser-empty">Loading…</p>
             )}
 
             {!loading && vms.length === 0 && !error && (
-                <p className="vm-browser-empty">No VMs found.</p>
+                <p className="vm-browser-empty">No machines found.</p>
             )}
 
             {!loading && vms.length > 0 && filteredVMs.length === 0 && !error && (
-                <p className="vm-browser-empty">No VMs match "{search.trim()}".</p>
+                <p className="vm-browser-empty">No matches for "{search.trim()}".</p>
             )}
 
             <ul className="vm-list vm-tree">
@@ -472,4 +447,8 @@ export default function VMBrowser({ vms, selected, loading, error, width, onSele
             </ul>
         </div>
     );
+}
+
+function filteredCountLabel(count: number): string {
+    return `${count} match${count === 1 ? '' : 'es'}`;
 }

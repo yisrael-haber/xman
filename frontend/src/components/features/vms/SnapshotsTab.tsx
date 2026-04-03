@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
 import { manager } from '../../../../wailsjs/go/models';
 import { SnapshotList, SnapshotCreate, SnapshotRevert, SnapshotDelete } from '../../../../wailsjs/go/manager/Manager';
-import useTerminalJob from '../../../hooks/useTerminalJob';
+import type { TrackJobHandler, WatchTerminalJobHandler } from '../../../hooks/useJobs';
 
 interface Props {
     vm: manager.VMInfo;
-    onJobStarted: (id: string, targetName?: string) => void;
+    onJobStarted: TrackJobHandler;
+    watchJobTerminal: WatchTerminalJobHandler;
     backendType: string;
 }
 
@@ -18,7 +19,7 @@ function formatSnapshotDate(value: any): string {
     return date.toLocaleString();
 }
 
-export default function SnapshotsTab({ vm, onJobStarted, backendType }: Props) {
+export default function SnapshotsTab({ vm, onJobStarted, watchJobTerminal, backendType }: Props) {
     const [snaps, setSnaps]       = useState<manager.SnapshotInfo[]>([]);
     const [loading, setLoading]   = useState(false);
     const [error, setError]       = useState('');
@@ -29,8 +30,6 @@ export default function SnapshotsTab({ vm, onJobStarted, backendType }: Props) {
     const [creating, setCreating] = useState(false);
     const [createErr, setCreateErr] = useState('');
     const supportsAdvancedSnapshotOptions = backendType === 'vcenter';
-    const watchTerminalJob = useTerminalJob();
-
     const load = useCallback(async () => {
         setLoading(true);
         setError('');
@@ -47,10 +46,8 @@ export default function SnapshotsTab({ vm, onJobStarted, backendType }: Props) {
 
     function trackAndReload(id: string) {
         onJobStarted(id, vm.name || vm.ref);
-        watchTerminalJob(id, (job: any) => {
-            if (job.status === 'done' || job.status === 'failed' || job.status === 'cancelled') {
-                load();
-            }
+        watchJobTerminal(id, () => {
+            void load();
         });
     }
 
@@ -133,26 +130,27 @@ export default function SnapshotsTab({ vm, onJobStarted, backendType }: Props) {
                 <p className="vm-browser-empty">No snapshots.</p>
             )}
 
-            {snaps.map(snap => (
-                (() => {
-                    const createTime = formatSnapshotDate(snap.createTime);
-                    return (
-                        <div key={snap.ref} className={`snapshot-row ${snap.isCurrent ? 'snapshot-row--current' : ''}`}
-                             style={{ paddingLeft: `${0.75 + snap.depth * 1.25}rem` }}>
-                            <div className="snapshot-info">
-                                <span className="snapshot-name">{snap.name}</span>
-                                {snap.isCurrent && <span className="badge badge--green" style={{fontSize:'0.7rem'}}>current</span>}
-                                {snap.description && <span className="snapshot-desc">{snap.description}</span>}
-                                {createTime && <span className="snapshot-date">{createTime}</span>}
-                            </div>
-                            <div className="snapshot-actions">
-                                <button className="btn-secondary" onClick={() => handleRevert(snap.ref)}>Revert</button>
-                                <button className="btn-secondary btn-danger" onClick={() => handleDelete(snap.ref)}>Delete</button>
-                            </div>
+            {snaps.map(snap => {
+                const createTime = formatSnapshotDate(snap.createTime);
+                return (
+                    <div
+                        key={snap.ref}
+                        className={`snapshot-row ${snap.isCurrent ? 'snapshot-row--current' : ''}`}
+                        style={{ paddingLeft: `${0.75 + snap.depth * 1.25}rem` }}
+                    >
+                        <div className="snapshot-info">
+                            <span className="snapshot-name">{snap.name}</span>
+                            {snap.isCurrent && <span className="badge badge--green" style={{ fontSize: '0.7rem' }}>current</span>}
+                            {snap.description && <span className="snapshot-desc">{snap.description}</span>}
+                            {createTime && <span className="snapshot-date">{createTime}</span>}
                         </div>
-                    );
-                })()
-            ))}
+                        <div className="snapshot-actions">
+                            <button className="btn-secondary" onClick={() => handleRevert(snap.ref)}>Revert</button>
+                            <button className="btn-secondary btn-danger" onClick={() => handleDelete(snap.ref)}>Delete</button>
+                        </div>
+                    </div>
+                );
+            })}
         </div>
     );
 }

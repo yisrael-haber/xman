@@ -562,6 +562,10 @@ case "$cmd" in
     printf '%s' "${FAKE_VMRUN_SNAPSHOTS_OUTPUT:-Total snapshots: 0\n}"
     ;;
   copyFileFromGuestToHost)
+    if [[ -n "${FAKE_VMRUN_COPY_FROM_GUEST_ERROR:-}" ]]; then
+      printf '%s\n' "${FAKE_VMRUN_COPY_FROM_GUEST_ERROR}" >&2
+      exit 1
+    fi
     guest_path="${args[2]}"
     local_path="${args[3]}"
     if [[ "$guest_path" == *"exec_out_"* ]]; then
@@ -571,6 +575,10 @@ case "$cmd" in
     fi
     ;;
   runProgramInGuest)
+    if [[ -n "${FAKE_VMRUN_RUN_ERROR:-}" ]]; then
+      printf '%s\n' "${FAKE_VMRUN_RUN_ERROR}" >&2
+      exit 1
+    fi
     if [[ -n "${FAKE_VMRUN_CLEANUP_SLEEP_SECS:-}" && "${args[2]:-}" == "/bin/sh" && "${args[3]:-}" == "-c" && "${args[4]:-}" == rm\ -f* ]]; then
       sleep "${FAKE_VMRUN_CLEANUP_SLEEP_SECS}"
     fi
@@ -579,7 +587,13 @@ case "$cmd" in
       exit 1
     fi
     ;;
-  copyFileFromHostToGuest|deleteFileInGuest|start|stop|reset|suspend|snapshot|revertToSnapshot|deleteSnapshot|installTools)
+  copyFileFromHostToGuest)
+    if [[ -n "${FAKE_VMRUN_COPY_TO_GUEST_ERROR:-}" ]]; then
+      printf '%s\n' "${FAKE_VMRUN_COPY_TO_GUEST_ERROR}" >&2
+      exit 1
+    fi
+    ;;
+  deleteFileInGuest|start|stop|reset|suspend|snapshot|revertToSnapshot|deleteSnapshot|installTools)
     ;;
   *)
     printf 'unexpected fake vmrun command: %s\n' "$cmd" >&2
@@ -636,4 +650,56 @@ func countLogLines(logText, want string) int {
 		}
 	}
 	return count
+}
+
+func TestBackendGuestRunToolsNotReadyReturnsHelpfulError(t *testing.T) {
+	vmDir := t.TempDir()
+	vmxPath := writeTestVMX(t, vmDir, "kali-vm", "debian-64", 2, 4096)
+
+	backend, _, _ := newFakeVmrunBackend(t, vmDir, map[string]string{
+		"FAKE_VMRUN_LIST_OUTPUT": "Total running VMs: 1\n" + vmxPath + "\n",
+		"FAKE_VMRUN_RUN_ERROR":   "Error: The VMware Tools are not running in the virtual machine.",
+	})
+
+	err := backend.GuestRun(context.Background(), noEmitWS, manager.RunRequest{
+		VMRef:     vmxPath,
+		Username:  "root",
+		Password:  "secret",
+		Command:   "echo ready",
+		GuestOS:   "debian-64",
+	})
+	if err == nil {
+		t.Fatal("GuestRun() error = nil, want helpful Guest Ops readiness error")
+	}
+	if !strings.Contains(err.Error(), "Guest Ops is not ready in the guest yet") {
+		t.Fatalf("GuestRun() error = %q, want Guest Ops readiness hint", err)
+	}
+}
+
+func TestBackendUploadToolsNotReadyReturnsHelpfulError(t *testing.T) {
+	vmDir := t.TempDir()
+	vmxPath := writeTestVMX(t, vmDir, "kali-vm", "debian-64", 2, 4096)
+	localPath := filepath.Join(t.TempDir(), "test.txt")
+	if err := os.WriteFile(localPath, []byte("hello"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%q) error = %v", localPath, err)
+	}
+
+	backend, _, _ := newFakeVmrunBackend(t, vmDir, map[string]string{
+		"FAKE_VMRUN_LIST_OUTPUT":         "Total running VMs: 1\n" + vmxPath + "\n",
+		"FAKE_VMRUN_COPY_TO_GUEST_ERROR": "Error: The VMware Tools are not running in the virtual machine.",
+	})
+
+	err := backend.Upload(context.Background(), noEmitWS, manager.UploadRequest{
+		VMRef:     vmxPath,
+		Username:  "root",
+		Password:  "secret",
+		LocalPath: localPath,
+		GuestPath: "/tmp/test.txt",
+	})
+	if err == nil {
+		t.Fatal("Upload() error = nil, want helpful Guest Ops readiness error")
+	}
+	if !strings.Contains(err.Error(), "Guest Ops is not ready in the guest yet") {
+		t.Fatalf("Upload() error = %q, want Guest Ops readiness hint", err)
+	}
 }

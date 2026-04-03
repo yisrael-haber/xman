@@ -6,7 +6,7 @@ export default function SSHKeysPanel() {
     const [activeTab, setActiveTab] = useState<'sshkeys' | 'guestcredentials'>('sshkeys');
 
     return (
-        <div className="vm-detail" style={{ width: '100%' }}>
+        <div className="vm-detail panel-shell">
             <div className="tab-bar">
                 <button
                     className={`tab ${activeTab === 'sshkeys' ? 'tab--active' : ''}`}

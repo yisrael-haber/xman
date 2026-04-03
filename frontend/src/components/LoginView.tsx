@@ -92,8 +92,12 @@ export default function LoginView({ onConnected }: Props) {
         <div className="login-backdrop">
             <div className="login-card">
                 <img src={appIcon} alt="xman" className="login-logo" />
+                <div className="login-copy">
+                    <h1 className="login-title">xman</h1>
+                    <p className="login-subtitle">A cleaner desktop view into VMware guests and guest operations.</p>
+                </div>
 
-                <div className="tab-bar" style={{margin: '0 -2.5rem 0.5rem', padding: '0 2.5rem', justifyContent: 'center'}}>
+                <div className="tab-bar login-backend-switch">
                     <button
                         type="button"
                         className={`tab ${backendType === 'vcenter' ? 'tab--active' : ''}`}
@@ -165,20 +169,19 @@ export default function LoginView({ onConnected }: Props) {
                     {backendType === 'workstation' && (
                         <div className="field">
                             <label htmlFor="vmDir">VM folder (optional)</label>
-                            <div style={{ display: 'flex', gap: '0.4rem' }}>
+                            <div className="login-browse-row">
                                 <input
+                                    className="login-browse-input"
                                     id="vmDir"
                                     type="text"
                                     value={vmDir}
                                     onChange={e => setVmDir(e.target.value)}
                                     placeholder="Leave blank to use default location"
                                     autoFocus
-                                    style={{ flex: 1 }}
                                 />
                                 <button
                                     type="button"
-                                    className="icon-btn"
-                                    style={{ padding: '0 0.6rem', flexShrink: 0, fontSize: '0.8rem' }}
+                                    className="icon-btn login-browse-btn"
                                     title="Browse for folder"
                                     onClick={() =>
                                         OpenDirectoryDialog('Select VM folder').then(p => { if (p) setVmDir(p); })

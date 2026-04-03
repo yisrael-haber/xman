@@ -128,7 +128,7 @@ Available on **vCenter**:
 - Available on `vCenter`
 - Opens the VMware HTML5 console in the default browser with a fresh one-time session ticket
 - Shows console diagnostics in the VM tab before launch, including the selected console host, redacted launch URL, and simple reachability checks
-- Prefers the exact vCenter host you connected to when building the console URL, which helps avoid closed-network FQDN mismatches
+- Prefers the vCenter-reported FQDN for the console host when available, and surfaces a warning when it differs from the current session host
 - Does not require public internet access because the console page is served by vCenter itself
 - Requires desktop reachability to:
   - the `vCenter` endpoint
@@ -225,7 +225,7 @@ The UI will still let you attempt Guest Ops on a powered-on VM even before the T
 
 ### Go
 
-Go 1.21 or later:
+Go 1.24.13 or later:
 
 ```bash
 go version

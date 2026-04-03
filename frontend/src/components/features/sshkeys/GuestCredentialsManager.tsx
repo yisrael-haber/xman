@@ -179,7 +179,7 @@ export default function GuestCredentialsManager() {
                         <div className="ssh-key-item-meta">{credential.username}</div>
                     </div>
                 ))}
-                {error && <p className="form-error" style={{ margin: '0.5rem' }}>{error}</p>}
+                {error && <p className="form-error section-error">{error}</p>}
             </div>
 
             <div className="ssh-keys-detail">
@@ -187,7 +187,7 @@ export default function GuestCredentialsManager() {
                     <div className="ssh-key-detail-view">
                         <div className="ssh-key-detail-header">
                             <span className="ssh-key-detail-title">{selected.label}</span>
-                            <div style={{ display: 'flex', gap: '0.5rem' }}>
+                            <div className="detail-actions">
                                 <button className="btn-secondary" onClick={() => void handleStartEdit()}>
                                     Edit
                                 </button>
@@ -201,7 +201,7 @@ export default function GuestCredentialsManager() {
                             <span className="ssh-key-badge">user: {selected.username}</span>
                         </div>
 
-                        <div className="field" style={{ marginTop: '0.75rem' }}>
+                        <div className="field field-spaced">
                             <label>Password</label>
                             <div className="input-with-btn">
                                 <input
@@ -223,10 +223,9 @@ export default function GuestCredentialsManager() {
                 )}
 
                 <div
-                    className="ssh-key-create-form"
-                    style={selected ? { borderTop: '1px solid #1e3044', paddingTop: '1.25rem', marginTop: '1.25rem' } : {}}
+                    className={`ssh-key-create-form${selected ? ' section-divider' : ''}`}
                 >
-                    <div className="ssh-key-detail-title" style={{ marginBottom: '1rem' }}>
+                    <div className="ssh-key-detail-title section-title-row">
                         {isEditing ? 'Edit Guest Credential' : selected ? 'Create Another Credential' : 'Create Guest Credential'}
                     </div>
 
@@ -263,7 +262,7 @@ export default function GuestCredentialsManager() {
                     {createError && <p className="form-error">{createError}</p>}
 
                     {isEditing ? (
-                        <div style={{ display: 'flex', gap: '0.5rem' }}>
+                        <div className="form-actions">
                             <button className="btn-primary" onClick={() => void handleSaveEdit()} disabled={!canSaveEdit}>
                                 {savingEdit ? 'Saving…' : 'Save Changes'}
                             </button>

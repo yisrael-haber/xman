@@ -17,7 +17,7 @@ interface Props {
 
 export default function MainView({ info, onDisconnect }: Props) {
     const [activeFeature, setActiveFeature] = useState<FeatureID>('vms');
-    const { jobs, trackJob, dismiss, cancel } = useJobs();
+    const { jobs, trackJob, watchTerminalJob, dismiss, cancel } = useJobs();
 
     async function handleDisconnect() {
         await Disconnect();
@@ -44,6 +44,7 @@ export default function MainView({ info, onDisconnect }: Props) {
                     {activeFeature === 'vms' && (
                         <VMPanel
                             onJobStarted={trackJob}
+                            watchJobTerminal={watchTerminalJob}
                             toolsInstall={info.toolsInstall}
                             guestOps={info.guestOps}
                             console={info.console}
@@ -57,7 +58,7 @@ export default function MainView({ info, onDisconnect }: Props) {
                         <SSHKeysPanel />
                     )}
                     {activeFeature === 'scripts' && (
-                        <div className="vm-detail" style={{ width: '100%' }}>
+                        <div className="vm-detail panel-shell">
                             <StoredScriptsManager />
                         </div>
                     )}

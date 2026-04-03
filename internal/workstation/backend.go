@@ -81,7 +81,7 @@ var (
 
 const (
 	guestRuntimeCacheTTL     = 15 * time.Second
-	guestRuntimeQueryTimeout = 2 * time.Second
+	guestRuntimeQueryTimeout = 5 * time.Second
 	guestCleanupTimeout      = 15 * time.Second
 	runningVMSetCacheTTL     = time.Second
 	vmListDetailConcurrency  = 4
@@ -1387,6 +1387,28 @@ func (b *Backend) cleanupGuestRunArtifactsAsync(vmRef, username, password string
 	}(append([]string(nil), filtered...))
 }
 
+func isGuestToolsNotReadyError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "vmware tools are not running") ||
+		strings.Contains(message, "vmware tools is not running") ||
+		strings.Contains(message, "tools are not running") ||
+		strings.Contains(message, "tools is not running")
+}
+
+func wrapGuestOpsError(action string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if isGuestToolsNotReadyError(err) {
+		return fmt.Errorf("%s: Guest Ops is not ready in the guest yet. Try again in a few seconds. VMware reported: %w", action, err)
+	}
+	return fmt.Errorf("%s: %w", action, err)
+}
+
 func (b *Backend) Upload(ctx context.Context, emit jobs.EmitFn, req manager.UploadRequest) error {
 	started := time.Now()
 	b.traceEvent("upload_begin", "vm", vmLabel(req.VMRef), "local_path", req.LocalPath, "guest_path", req.GuestPath)
@@ -1395,7 +1417,7 @@ func (b *Backend) Upload(ctx context.Context, emit jobs.EmitFn, req manager.Uplo
 		"copyFileFromHostToGuest", req.VMRef, req.LocalPath, req.GuestPath)...)
 	if err != nil {
 		b.traceEvent("upload_error", "vm", vmLabel(req.VMRef), "local_path", req.LocalPath, "guest_path", req.GuestPath, "error", err)
-		return fmt.Errorf("upload: %w", err)
+		return wrapGuestOpsError("upload", err)
 	}
 	emit(100, "Upload complete.")
 	b.traceTiming("Upload", started, "vm", vmLabel(req.VMRef), "local_path", req.LocalPath, "guest_path", req.GuestPath)
@@ -1410,7 +1432,7 @@ func (b *Backend) Download(ctx context.Context, emit jobs.EmitFn, req manager.Do
 		"copyFileFromGuestToHost", req.VMRef, req.GuestPath, req.LocalPath)...)
 	if err != nil {
 		b.traceEvent("download_error", "vm", vmLabel(req.VMRef), "guest_path", req.GuestPath, "local_path", req.LocalPath, "error", err)
-		return fmt.Errorf("download: %w", err)
+		return wrapGuestOpsError("download", err)
 	}
 	emit(100, "Download complete.")
 	b.traceTiming("Download", started, "vm", vmLabel(req.VMRef), "guest_path", req.GuestPath, "local_path", req.LocalPath)
@@ -1464,7 +1486,7 @@ func (b *Backend) GuestRun(ctx context.Context, emit jobs.EmitFn, req manager.Ru
 	// (auth failures, tools not running, etc.) — not guest exit-code errors.
 	if runErr != nil && !strings.Contains(runErr.Error(), "non-zero exit code") {
 		b.traceEvent("guest_run_vmrun_error", "vm", vmLabel(req.VMRef), "error", runErr)
-		return fmt.Errorf("running command: %w", runErr)
+		return wrapGuestOpsError("running command", runErr)
 	}
 
 	emit(80, "Downloading output...")

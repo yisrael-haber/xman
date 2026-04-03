@@ -22,7 +22,7 @@ export interface Job {
     targetName?: string;
 }
 
-interface JobUpdate {
+export interface JobUpdate {
     id: string;
     feature: string;
     label: string;
@@ -36,6 +36,23 @@ interface JobUpdate {
     logLength?: number;
     lastLog?: LogEntry;
     targetName?: string;
+}
+
+export interface TerminalJobUpdate extends JobUpdate {
+    status: Exclude<Job['status'], 'running'>;
+}
+
+export type TrackJobHandler = (id: string, targetName?: string) => void;
+export type WatchTerminalJobHandler = (id: string, onTerminal: (job: TerminalJobUpdate) => void) => () => void;
+
+function isTerminalStatus(status: Job['status']): status is TerminalJobUpdate['status'] {
+    return status === 'done' || status === 'failed' || status === 'cancelled';
+}
+
+function toTerminalJob(job: JobUpdate): TerminalJobUpdate | null {
+    return isTerminalStatus(job.status)
+        ? { ...job, status: job.status }
+        : null;
 }
 
 function normalizeLogEntry(entry: any): LogEntry {
@@ -99,6 +116,7 @@ export function useJobs() {
     const [jobs, setJobs] = useState<Job[]>([]);
     const subscriptionsRef = useRef(new Map<string, () => void>());
     const jobTargetNamesRef = useRef(new Map<string, string>());
+    const terminalWatchersRef = useRef(new Map<string, Set<(job: TerminalJobUpdate) => void>>());
 
     const upsertJob = useCallback((job: JobUpdate) => {
         setJobs(prev => {
@@ -113,12 +131,29 @@ export function useJobs() {
         });
     }, []);
 
+    const notifyTerminalWatchers = useCallback((job: JobUpdate) => {
+        const terminalJob = toTerminalJob(job);
+        if (!terminalJob) {
+            return;
+        }
+
+        const watchers = terminalWatchersRef.current.get(terminalJob.id);
+        if (!watchers || watchers.size === 0) {
+            return;
+        }
+
+        terminalWatchersRef.current.delete(terminalJob.id);
+        watchers.forEach(watcher => watcher(terminalJob));
+    }, []);
+
     const ensureTracked = useCallback((id: string) => {
         const existing = subscriptionsRef.current.get(id);
         if (existing) return existing;
 
         const runtimeUnsub = EventsOn(`job:${id}`, (job: JobUpdate) => {
-            upsertJob(normalizeJob(job));
+            const normalized = normalizeJob(job);
+            upsertJob(normalized);
+            notifyTerminalWatchers(normalized);
         });
         const unsub = () => {
             runtimeUnsub();
@@ -126,7 +161,7 @@ export function useJobs() {
         };
         subscriptionsRef.current.set(id, unsub);
         return unsub;
-    }, [upsertJob]);
+    }, [notifyTerminalWatchers, upsertJob]);
 
     useEffect(() => {
         let cancelled = false;
@@ -144,22 +179,76 @@ export function useJobs() {
             cancelled = true;
             subscriptionsRef.current.forEach(unsub => unsub());
             subscriptionsRef.current.clear();
+            terminalWatchersRef.current.clear();
         };
     }, [ensureTracked]);
 
-    const trackJob = useCallback((id: string, targetName?: string) => {
+    const trackJob = useCallback<TrackJobHandler>((id, targetName) => {
         if (targetName) jobTargetNamesRef.current.set(id, targetName);
         const unsub = ensureTracked(id);
         JobGet(id)
             .then(job => {
                 if (job) {
                     const normalized = normalizeJob(job);
-                    upsertJob(targetName ? { ...normalized, targetName } : normalized);
+                    const nextJob = targetName ? { ...normalized, targetName } : normalized;
+                    upsertJob(nextJob);
+                    notifyTerminalWatchers(nextJob);
                 }
             })
             .catch(() => { /* best-effort hydration */ });
         return unsub;
-    }, [ensureTracked, upsertJob]);
+    }, [ensureTracked, notifyTerminalWatchers, upsertJob]);
+
+    const watchTerminalJob = useCallback<WatchTerminalJobHandler>((id, onTerminal) => {
+        ensureTracked(id);
+
+        let active = true;
+        const watchers = terminalWatchersRef.current.get(id) ?? new Set<(job: TerminalJobUpdate) => void>();
+        terminalWatchersRef.current.set(id, watchers);
+
+        const remove = () => {
+            if (!active) {
+                return;
+            }
+            active = false;
+
+            const currentWatchers = terminalWatchersRef.current.get(id);
+            if (!currentWatchers) {
+                return;
+            }
+
+            currentWatchers.delete(handleTerminal);
+            if (currentWatchers.size === 0) {
+                terminalWatchersRef.current.delete(id);
+            }
+        };
+
+        const handleTerminal = (job: TerminalJobUpdate) => {
+            if (!active) {
+                return;
+            }
+            remove();
+            onTerminal(job);
+        };
+
+        watchers.add(handleTerminal);
+
+        JobGet(id)
+            .then(job => {
+                if (!active || !job) {
+                    return;
+                }
+
+                const normalized = normalizeJob(job);
+                const terminalJob = toTerminalJob(normalized);
+                if (terminalJob) {
+                    handleTerminal(terminalJob);
+                }
+            })
+            .catch(() => { /* best-effort hydration */ });
+
+        return remove;
+    }, [ensureTracked]);
 
     const dismiss = useCallback((id: string) => {
         const unsub = subscriptionsRef.current.get(id);
@@ -173,5 +262,5 @@ export function useJobs() {
         void JobCancel(id);
     }, []);
 
-    return { jobs, trackJob, dismiss, cancel };
+    return { jobs, trackJob, watchTerminalJob, dismiss, cancel };
 }

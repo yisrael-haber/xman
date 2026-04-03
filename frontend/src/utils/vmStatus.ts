@@ -26,10 +26,6 @@ export function formatToolsStatus(state: string): string {
     }
 }
 
-export function isToolsReady(state: string): boolean {
-    return state === 'toolsOk' || state === 'toolsOld';
-}
-
 export function formatGuestOpsStatus(powerState: string, guestOpsReady: boolean, toolsStatus: string): string {
     if (powerState !== 'poweredOn') {
         return 'Guest ops unavailable';
@@ -41,11 +37,4 @@ export function formatGuestOpsStatus(powerState: string, guestOpsReady: boolean,
         return 'Guest ops need VMware Tools';
     }
     return 'Guest ops starting';
-}
-
-export function guestOpsWarmupMessage(toolsStatus: string): string {
-    if (toolsStatus === 'toolsNotInstalled') {
-        return 'Guest operations are not ready yet. For a fresh Windows VM, use Bootstrap Guest Ops in VM Info. If setup has already started inside the guest, you can still try now and xman will surface the real vSphere result.';
-    }
-    return 'VMware Tools are still starting or vSphere has not marked guest operations ready yet. You can try now, and xman will show the real vSphere result if readiness is still catching up.';
 }

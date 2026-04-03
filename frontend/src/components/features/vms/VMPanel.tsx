@@ -11,15 +11,16 @@ import ConsoleTab from './ConsoleTab';
 import { formatGuestOpsStatus, formatPowerState } from '../../../utils/vmStatus';
 import useVMTransport from '../../../hooks/useVMTransport';
 import VMTransportControls from './VMTransportControls';
+import type { TrackJobHandler, WatchTerminalJobHandler } from '../../../hooks/useJobs';
 type TabID = 'info' | 'console' | 'filetransfer' | 'snapshots' | 'exec' | 'deploykey';
 
 const ALL_TABS: { id: TabID; label: string; requiresGuestOps?: boolean; requiresConsole?: boolean }[] = [
-    { id: 'info',         label: 'VM Info'       },
+    { id: 'info',         label: 'Info'          },
     { id: 'console',      label: 'Console',       requiresConsole: true },
     { id: 'snapshots',    label: 'Snapshots'     },
     { id: 'exec',         label: 'Run'           },
-    { id: 'filetransfer', label: 'File Transfer', requiresGuestOps: true },
-    { id: 'deploykey',    label: 'Deploy SSH Key' },
+    { id: 'filetransfer', label: 'Files',         requiresGuestOps: true },
+    { id: 'deploykey',    label: 'SSH Key'       },
 ];
 
 const VM_BROWSER_MIN_WIDTH = 200;
@@ -29,7 +30,8 @@ const VM_DETAIL_MIN_WIDTH = 360;
 const VM_BROWSER_WIDTH_STORAGE_KEY = 'xman.vmBrowserWidth';
 
 interface Props {
-    onJobStarted: (id: string, targetName?: string) => void;
+    onJobStarted: TrackJobHandler;
+    watchJobTerminal: WatchTerminalJobHandler;
     toolsInstall: boolean;
     guestOps: boolean;
     console: boolean;
@@ -37,7 +39,8 @@ interface Props {
 }
 
 interface VMDetailProps {
-    onJobStarted: (id: string, targetName?: string) => void;
+    onJobStarted: TrackJobHandler;
+    watchJobTerminal: WatchTerminalJobHandler;
     toolsInstall: boolean;
     backendType: string;
     vm: manager.VMInfo;
@@ -88,15 +91,20 @@ function clampBrowserWidth(width: number, panelWidth: number): number {
     return Math.min(Math.max(width, minWidth), maxWidth);
 }
 
-function VMDetail({ vm, activeTab, visibleTabs, onRefresh, onTabChange, onJobStarted, toolsInstall, backendType }: VMDetailProps) {
-    const transport = useVMTransport(vm);
+function VMDetail({ vm, activeTab, visibleTabs, onRefresh, onTabChange, onJobStarted, watchJobTerminal, toolsInstall, backendType }: VMDetailProps) {
+    const transportEnabled = activeTab === 'exec' || activeTab === 'filetransfer' || activeTab === 'deploykey';
+    const transport = useVMTransport(vm, transportEnabled);
     const showTransportControls = activeTab === 'exec' || activeTab === 'filetransfer';
+    const headerMeta = [
+        vm.guestOS || '',
+        vm.ipAddress || '',
+        formatGuestOpsStatus(vm.powerState, vm.guestOpsReady, vm.toolsStatus),
+    ].filter(Boolean);
 
     return (
         <>
             <div className="vm-detail-header">
                 <div className="vm-detail-header-main">
-                    <span className="vm-detail-eyebrow">Selected VM</span>
                     <div className="vm-detail-title-row">
                         <h2 className="vm-detail-title">{vm.name}</h2>
                         <span className={`badge badge--${vm.powerState === 'poweredOn' ? 'green' : vm.powerState === 'suspended' ? 'yellow' : 'gray'}`}>
@@ -108,11 +116,13 @@ function VMDetail({ vm, activeTab, visibleTabs, onRefresh, onTabChange, onJobSta
                             {vm.displayPath}
                         </div>
                     )}
-                    <div className="vm-detail-meta">
-                        <span>{vm.guestOS || 'Guest OS unavailable'}</span>
-                        <span>{vm.ipAddress || 'No IP reported yet'}</span>
-                        <span>{formatGuestOpsStatus(vm.powerState, vm.guestOpsReady, vm.toolsStatus)}</span>
-                    </div>
+                    {headerMeta.length > 0 && (
+                        <div className="vm-detail-meta">
+                            {headerMeta.map(item => (
+                                <span key={item}>{item}</span>
+                            ))}
+                        </div>
+                    )}
                 </div>
             </div>
 
@@ -136,6 +146,7 @@ function VMDetail({ vm, activeTab, visibleTabs, onRefresh, onTabChange, onJobSta
                         vm={vm}
                         onRefresh={onRefresh}
                         onJobStarted={onJobStarted}
+                        watchJobTerminal={watchJobTerminal}
                         toolsInstall={toolsInstall}
                         backendType={backendType}
                     />
@@ -144,10 +155,10 @@ function VMDetail({ vm, activeTab, visibleTabs, onRefresh, onTabChange, onJobSta
                     <ConsoleTab vm={vm} />
                 )}
                 {activeTab === 'snapshots' && (
-                    <SnapshotsTab vm={vm} onJobStarted={onJobStarted} backendType={backendType} />
+                    <SnapshotsTab vm={vm} onJobStarted={onJobStarted} watchJobTerminal={watchJobTerminal} backendType={backendType} />
                 )}
                 {activeTab === 'exec' && (
-                    <GuestExecTab vm={vm} onJobStarted={onJobStarted} transport={transport} />
+                    <GuestExecTab vm={vm} onJobStarted={onJobStarted} watchJobTerminal={watchJobTerminal} transport={transport} />
                 )}
                 {activeTab === 'filetransfer' && (
                     <FileTransferTab vm={vm} onJobStarted={onJobStarted} transport={transport} />
@@ -160,7 +171,7 @@ function VMDetail({ vm, activeTab, visibleTabs, onRefresh, onTabChange, onJobSta
     );
 }
 
-export default function VMPanel({ onJobStarted, toolsInstall, guestOps, console, backendType }: Props) {
+export default function VMPanel({ onJobStarted, watchJobTerminal, toolsInstall, guestOps, console, backendType }: Props) {
     const [vms,      setVms]      = useState<manager.VMInfo[]>([]);
     const [selected, setSelected] = useState<manager.VMInfo | null>(null);
     const [loading,  setLoading]  = useState(false);
@@ -172,6 +183,7 @@ export default function VMPanel({ onJobStarted, toolsInstall, guestOps, console,
     const [documentVisible, setDocumentVisible] = useState(() => isDocumentVisible());
     const panelRef = useRef<HTMLDivElement | null>(null);
     const refreshing = useRef(false);
+    const hasLoadedVMsRef = useRef(false);
     const queuedRefresh = useRef<boolean | null>(null);
     const selectedRefreshes = useRef(new Map<string, { token: symbol; promise: Promise<void> }>());
     const browserResizeStartRef = useRef<{ startX: number; startWidth: number } | null>(null);
@@ -370,13 +382,11 @@ export default function VMPanel({ onJobStarted, toolsInstall, guestOps, console,
     }, [isResizingBrowser]);
 
     useEffect(() => {
-        void loadVMs();
-    }, []);
-
-    useEffect(() => {
         if (!documentVisible) return;
 
-        void loadVMs(true);
+        const silent = hasLoadedVMsRef.current;
+        hasLoadedVMsRef.current = true;
+        void loadVMs(silent);
         const id = setInterval(() => loadVMs(true), 5_000);
         return () => clearInterval(id);
     }, [documentVisible]);
@@ -453,6 +463,7 @@ export default function VMPanel({ onJobStarted, toolsInstall, guestOps, console,
                         onRefresh={loadVMs}
                         onTabChange={setActiveTab}
                         onJobStarted={onJobStarted}
+                        watchJobTerminal={watchJobTerminal}
                         toolsInstall={toolsInstall}
                         backendType={backendType}
                     />

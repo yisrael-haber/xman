@@ -12,8 +12,7 @@ interface Props {
 
 
 export default function FileTransferTab({ vm, onJobStarted, transport }: Props) {
-    const { mode, credentialLabel, sshHost, keyLabel, sshUser, vmPoweredOn } = transport;
-
+    const { mode, credentialLabel, sshHost, keyLabel, transportReady } = transport;
     const [upLocal, setUpLocal] = useState('');
     const [upGuest, setUpGuest] = useState('');
     const [upBusy,  setUpBusy]  = useState(false);
@@ -23,6 +22,8 @@ export default function FileTransferTab({ vm, onJobStarted, transport }: Props) 
     const [dlLocal, setDlLocal] = useState('');
     const [dlBusy,  setDlBusy]  = useState(false);
     const [dlErr,   setDlErr]   = useState('');
+    const canUpload = !upBusy && !!upLocal && !!upGuest && transportReady;
+    const canDownload = !dlBusy && !!dlGuest && !!dlLocal && transportReady;
 
     async function pickUploadFile() {
         const path = await OpenFileDialog('Select file to upload');
@@ -69,8 +70,6 @@ export default function FileTransferTab({ vm, onJobStarted, transport }: Props) 
         }
     }
 
-    const sshReady = !!sshHost.trim() && !!keyLabel && !!sshUser;
-
     return (
         <div className="tab-body tab-body--fill tab-body--centered">
             <div className="tab-split-panels">
@@ -90,8 +89,7 @@ export default function FileTransferTab({ vm, onJobStarted, transport }: Props) 
                     </div>
                     {upErr && <p className="form-error">{upErr}</p>}
                     <button className="btn-primary" onClick={handleUpload}
-                        disabled={upBusy || !upLocal || !upGuest ||
-                            (mode === 'vmware' ? (!credentialLabel || !vmPoweredOn) : !sshReady)}>
+                        disabled={!canUpload}>
                         {upBusy ? 'Starting...' : 'Upload'}
                     </button>
                 </div>
@@ -112,8 +110,7 @@ export default function FileTransferTab({ vm, onJobStarted, transport }: Props) 
                     </div>
                     {dlErr && <p className="form-error">{dlErr}</p>}
                     <button className="btn-primary" onClick={handleDownload}
-                        disabled={dlBusy || !dlGuest || !dlLocal ||
-                            (mode === 'vmware' ? (!credentialLabel || !vmPoweredOn) : !sshReady)}>
+                        disabled={!canDownload}>
                         {dlBusy ? 'Starting...' : 'Download'}
                     </button>
                 </div>

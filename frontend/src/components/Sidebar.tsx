@@ -75,6 +75,8 @@ export default function Sidebar({ active, onChange, showInventory }: Props) {
                     className={`nav-item ${active === item.id ? 'nav-item--active' : ''}`}
                     onClick={() => onChange(item.id)}
                     title={item.label}
+                    aria-label={item.label}
+                    aria-current={active === item.id ? 'page' : undefined}
                 >
                     {item.icon}
                 </button>

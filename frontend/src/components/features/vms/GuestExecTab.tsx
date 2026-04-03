@@ -4,14 +4,15 @@ import { GuestRun, SSHRun } from '../../../../wailsjs/go/manager/Manager';
 import { JobCancel } from '../../../../wailsjs/go/jobs/Manager';
 import { GetScript, LaunchInteractiveSSHSession, ListScripts } from '../../../../wailsjs/go/main/App';
 import { ClipboardSetText } from '../../../../wailsjs/runtime/runtime';
-import useTerminalJob from '../../../hooks/useTerminalJob';
+import type { TrackJobHandler, WatchTerminalJobHandler } from '../../../hooks/useJobs';
 import type { VMTransportState } from '../../../hooks/useVMTransport';
 import { scriptCompatibility } from '../../../utils/scripts';
 import { extractTerminalOutput } from '../../../utils/terminalJob';
 
 interface Props {
     vm: manager.VMInfo;
-    onJobStarted: (id: string, targetName?: string) => void;
+    onJobStarted: TrackJobHandler;
+    watchJobTerminal: WatchTerminalJobHandler;
     transport: VMTransportState;
 }
 
@@ -91,8 +92,8 @@ function describeResultStatus(
     return { statusLabel: 'Completed', statusToneClass: 'badge--green' };
 }
 
-export default function GuestExecTab({ vm, onJobStarted, transport }: Props) {
-    const { mode, credentialLabel, sshHost, keyLabel, sshUser, vmPoweredOn } = transport;
+export default function GuestExecTab({ vm, onJobStarted, watchJobTerminal, transport }: Props) {
+    const { mode, credentialLabel, sshHost, keyLabel, sshReady, transportReady } = transport;
     const [execMode, setExecMode] = useState<ExecMode>('raw');
     const [command, setCommand] = useState('');
     const [catalog, setCatalog] = useState<config.ScriptCatalog | null>(null);
@@ -110,15 +111,13 @@ export default function GuestExecTab({ vm, onJobStarted, transport }: Props) {
     const [launchingSession, setLaunchingSession] = useState(false);
     const outputRef = useRef<HTMLDivElement>(null);
     const loadTokenRef = useRef(0);
-    const watchTerminalJob = useTerminalJob();
     const windowsGuest = isWindowsGuest(vm.guestOS || '');
-    const sshReady = !!sshHost.trim() && !!keyLabel && !!sshUser;
-    const transportReady = mode === 'vmware' ? (!!credentialLabel && vmPoweredOn) : sshReady;
     const compatibility = execMode === 'script' && selectedScript
         ? scriptCompatibility(selectedScript.kind, windowsGuest)
         : null;
     const compatibilityMessage = compatibility && !compatibility.canRun ? compatibility : null;
     const displayError = error || (execMode === 'script' ? (catalogError || scriptError) : '');
+    const canOpenTerminal = mode === 'ssh' && sshReady && !launchingSession && !busy;
     const canRun = !busy && transportReady && (
         execMode === 'raw'
             ? !!command.trim()
@@ -206,10 +205,11 @@ export default function GuestExecTab({ vm, onJobStarted, transport }: Props) {
     }
 
     async function handleRun() {
+        if (!canRun) return;
+
         const rawCommand = command.trim();
         const scriptCommand = selectedScript?.content ?? '';
         const commandText = execMode === 'raw' ? rawCommand : scriptCommand;
-        if (!commandText) return;
 
         setError('');
         setBusy(true);
@@ -243,11 +243,11 @@ export default function GuestExecTab({ vm, onJobStarted, transport }: Props) {
             setActiveJobId(id);
             onJobStarted(id, vm.name || vm.ref);
 
-            watchTerminalJob(id, (job: any) => {
+            watchJobTerminal(id, job => {
                 const finishedAt = new Date();
                 const displayStatus = describeResultStatus(job.status, job?.message);
                 const output = extractTerminalOutput(job);
-                const nextResult: OutputEntry = {
+                setResult({
                     output,
                     status: job.status,
                     statusLabel: displayStatus.statusLabel,
@@ -256,20 +256,9 @@ export default function GuestExecTab({ vm, onJobStarted, transport }: Props) {
                     sourceLabel,
                     summary: typeof job?.label === 'string' && job.label.trim() ? job.label : summary,
                     metaLabel: formatRunMeta(startedAt, finishedAt),
-                };
-                if (job.status === 'done') {
-                    setResult(nextResult);
-                    setActiveJobId('');
-                    setBusy(false);
-                } else if (job.status === 'failed') {
-                    setResult(nextResult);
-                    setActiveJobId('');
-                    setBusy(false);
-                } else if (job.status === 'cancelled') {
-                    setResult(nextResult);
-                    setActiveJobId('');
-                    setBusy(false);
-                }
+                });
+                setActiveJobId('');
+                setBusy(false);
             });
 
             if (execMode === 'raw') {
@@ -322,7 +311,9 @@ export default function GuestExecTab({ vm, onJobStarted, transport }: Props) {
     function handleKeyDown(e: React.KeyboardEvent) {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
-            if (!busy) handleRun();
+            if (canRun) {
+                void handleRun();
+            }
         }
     }
 
@@ -353,7 +344,7 @@ export default function GuestExecTab({ vm, onJobStarted, transport }: Props) {
                                 value={command}
                                 onChange={e => setCommand(e.target.value)}
                                 onKeyDown={handleKeyDown}
-                                placeholder="command to run in guest"
+                                placeholder="Run a command"
                                 disabled={busy || !transportReady}
                                 autoComplete="off"
                             />
@@ -369,9 +360,9 @@ export default function GuestExecTab({ vm, onJobStarted, transport }: Props) {
                                 <button
                                     className="btn-secondary"
                                     onClick={() => void handleLaunchSession()}
-                                    disabled={!sshReady || launchingSession || busy}
+                                    disabled={!canOpenTerminal}
                                 >
-                                    {launchingSession ? 'Launching…' : 'Open Terminal'}
+                                    {launchingSession ? 'Launching…' : 'Terminal'}
                                 </button>
                             )}
                         </div>
@@ -407,9 +398,9 @@ export default function GuestExecTab({ vm, onJobStarted, transport }: Props) {
                                     <button
                                         className="btn-secondary"
                                         onClick={() => void handleLaunchSession()}
-                                        disabled={!sshReady || launchingSession || busy}
+                                        disabled={!canOpenTerminal}
                                     >
-                                        {launchingSession ? 'Launching…' : 'Open Terminal'}
+                                        {launchingSession ? 'Launching…' : 'Terminal'}
                                     </button>
                                 )}
                             </div>
@@ -421,7 +412,7 @@ export default function GuestExecTab({ vm, onJobStarted, transport }: Props) {
                         )}
 
                         {!catalogLoading && !(catalog?.scripts?.length) && !catalogError && (
-                            <p className="exec-inline-note">Create stored scripts in Scripts.</p>
+                            <p className="exec-inline-note">Create scripts in Scripts.</p>
                         )}
                     </>
                 )}
@@ -444,18 +435,14 @@ export default function GuestExecTab({ vm, onJobStarted, transport }: Props) {
                                     {result.summary}
                                 </span>
                             </>
-                        ) : (
-                            <span className="exec-shell-subtitle">
-                                Separate shell sessions. Each run replaces the previous output.
-                            </span>
-                        )}
+                        ) : null}
                     </div>
                     <button
                         className="btn-secondary"
                         onClick={() => void handleCopy()}
                         disabled={!result?.output || result?.status === 'running'}
                     >
-                        {copied ? 'Copied!' : 'Copy Output'}
+                        {copied ? 'Copied!' : 'Copy'}
                     </button>
                 </div>
 

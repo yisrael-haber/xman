@@ -15,48 +15,10 @@ export default function VMTransportControls({ transport }: Props) {
         keyLabel,
         setKeyLabel,
         keys,
-        keysError,
         credentials,
-        credentialsError,
-        selectedKey,
-        sshUser,
-        toolsStatus,
-        vmPoweredOn,
-        guestOpsReady,
+        transportMessage,
+        transportMessageTone,
     } = transport;
-
-    let message = '';
-    let messageTone: 'info' | 'warn' | 'error' = 'info';
-
-    if (mode === 'vmware') {
-        if (credentialsError) {
-            message = credentialsError;
-            messageTone = 'error';
-        } else if (credentials.length === 0) {
-            message = 'No guest credentials available.';
-            messageTone = 'warn';
-        } else if (!vmPoweredOn) {
-            message = 'Requires a powered-on VM.';
-            messageTone = 'warn';
-        } else if (toolsStatus === 'toolsNotInstalled') {
-            message = 'Requires VMware Tools.';
-            messageTone = 'warn';
-        } else if (!guestOpsReady) {
-            message = 'Guest Ops is not ready yet.';
-            messageTone = 'warn';
-        }
-    } else {
-        if (keysError) {
-            message = keysError;
-            messageTone = 'error';
-        } else if (keys.length === 0) {
-            message = 'No SSH keys available.';
-            messageTone = 'warn';
-        } else if (selectedKey && !sshUser) {
-            message = 'Selected key needs a default user.';
-            messageTone = 'warn';
-        }
-    }
 
     return (
         <div className="vm-transport-panel">
@@ -117,9 +79,9 @@ export default function VMTransportControls({ transport }: Props) {
                 )}
             </div>
 
-            {message && (
-                <p className={`vm-transport-message vm-transport-message--${messageTone}`}>
-                    {message}
+            {transportMessage && (
+                <p className={`vm-transport-message vm-transport-message--${transportMessageTone}`}>
+                    {transportMessage}
                 </p>
             )}
         </div>

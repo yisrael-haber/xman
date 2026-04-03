@@ -92,7 +92,7 @@ export default function SSHKeysManager() {
                         </div>
                     </div>
                 ))}
-                {error && <p className="form-error" style={{ margin: '0.5rem' }}>{error}</p>}
+                {error && <p className="form-error section-error">{error}</p>}
             </div>
 
             <div className="ssh-keys-detail">
@@ -112,7 +112,7 @@ export default function SSHKeysManager() {
                             )}
                         </div>
 
-                        <div className="field" style={{ marginTop: '0.75rem' }}>
+                        <div className="field field-spaced">
                             <label>Public Key</label>
                             <textarea
                                 className="ssh-key-pubkey"
@@ -121,21 +121,19 @@ export default function SSHKeysManager() {
                                 rows={3}
                             />
                             <button
-                                className="btn-secondary"
-                                style={{ marginTop: '0.4rem' }}
+                                className="btn-secondary field-inline-action"
                                 onClick={handleCopy}
                             >
-                                {copied ? 'Copied!' : 'Copy to clipboard'}
+                                {copied ? 'Copied!' : 'Copy public key'}
                             </button>
                         </div>
                     </div>
                 )}
 
                 <div
-                    className="ssh-key-create-form"
-                    style={selected ? { borderTop: '1px solid #1e3044', paddingTop: '1.25rem', marginTop: '1.25rem' } : {}}
+                    className={`ssh-key-create-form${selected ? ' section-divider' : ''}`}
                 >
-                    <div className="ssh-key-detail-title" style={{ marginBottom: '1rem' }}>
+                    <div className="ssh-key-detail-title section-title-row">
                         {selected ? 'Create Another Key' : 'Create New Key Pair'}
                     </div>
 
@@ -161,7 +159,7 @@ export default function SSHKeysManager() {
                     <div className="field">
                         <label>
                             Default Username{' '}
-                            <span style={{ fontWeight: 400, opacity: 0.6 }}>(optional — pre-fills deploy form)</span>
+                            <span className="field-label-note">(optional, pre-fills deploy form)</span>
                         </label>
                         <input
                             value={defaultUser}

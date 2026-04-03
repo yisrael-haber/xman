@@ -1,6 +1,6 @@
-import type { TerminalJob } from '../hooks/useTerminalJob';
+import type { TerminalJobUpdate } from '../hooks/useJobs';
 
-export function extractTerminalOutput(job: TerminalJob): string {
+export function extractTerminalOutput(job: TerminalJobUpdate): string {
     const log = Array.isArray(job?.log) ? job.log : [];
     for (let i = log.length - 1; i >= 0; i -= 1) {
         const entry = log[i];

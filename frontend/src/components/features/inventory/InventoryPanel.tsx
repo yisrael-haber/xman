@@ -39,14 +39,14 @@ export default function InventoryPanel() {
     useEffect(() => { load(); }, []);
 
     return (
-        <div className="vm-detail" style={{ width: '100%' }}>
+        <div className="vm-detail panel-shell">
             <div className="tab-bar">
                 {(['hosts', 'datastores'] as TabID[]).map(id => (
                     <button key={id} className={`tab ${tab === id ? 'tab--active' : ''}`} onClick={() => setTab(id)}>
                         {id === 'hosts' ? 'ESXi Hosts' : 'Datastores'}
                     </button>
                 ))}
-                <button className="icon-btn" style={{ marginLeft: 'auto', marginRight: '0.5rem' }} onClick={load} disabled={loading} title="Refresh">
+                <button className="icon-btn panel-refresh-btn" onClick={load} disabled={loading} title="Refresh">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <polyline points="23 4 23 10 17 10"/>
                         <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
@@ -66,7 +66,7 @@ export default function InventoryPanel() {
                             <div key={h.ref} className="inventory-card">
                                 <div className="inventory-card-header">
                                     <span className="inventory-card-name">{h.name || h.ref}</span>
-                                    <div style={{ display: 'flex', gap: '0.5rem' }}>
+                                    <div className="inventory-badge-row">
                                         <span className={`badge badge--${h.connectionState === 'connected' ? 'green' : 'red'}`}>
                                             {h.connectionState}
                                         </span>
@@ -105,7 +105,7 @@ export default function InventoryPanel() {
                             <div key={ds.ref} className="inventory-card">
                                 <div className="inventory-card-header">
                                     <span className="inventory-card-name">{ds.name || ds.ref}</span>
-                                    <div style={{ display: 'flex', gap: '0.5rem' }}>
+                                    <div className="inventory-badge-row">
                                         <span className="badge badge--gray">{ds.type}</span>
                                         <span className={`badge badge--${ds.accessible ? 'green' : 'red'}`}>
                                             {ds.accessible ? 'accessible' : 'inaccessible'}
@@ -113,7 +113,7 @@ export default function InventoryPanel() {
                                     </div>
                                 </div>
                                 <div className="inventory-card-stats">
-                                    <div className="inventory-stat" style={{ flex: 2 }}>
+                                    <div className="inventory-stat inventory-stat--wide">
                                         <span className="inventory-stat-label">Storage</span>
                                         <UsageBar used={ds.capacityGB - ds.freeGB} total={ds.capacityGB} />
                                         <span className="inventory-stat-detail">

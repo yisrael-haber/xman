@@ -189,7 +189,7 @@ export default function StoredScriptsManager() {
                         </div>
                     </div>
                 ))}
-                {error && <p className="form-error" style={{ margin: '0.5rem' }}>{error}</p>}
+                {error && <p className="form-error section-error">{error}</p>}
             </div>
 
             <div className="ssh-keys-detail">

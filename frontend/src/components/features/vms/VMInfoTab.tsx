@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react';
 import { manager } from '../../../../wailsjs/go/models';
 import { VMPowerOn, VMPowerOff, VMReset, VMSuspend, VMInstallTools, VMNetworkOptions, VMUpdateConfig, VMUpdateNetwork } from '../../../../wailsjs/go/manager/Manager';
-import useTerminalJob from '../../../hooks/useTerminalJob';
 import { formatPowerState } from '../../../utils/vmStatus';
+import type { TrackJobHandler, WatchTerminalJobHandler } from '../../../hooks/useJobs';
 
 interface Props {
     vm: manager.VMInfo;
     onRefresh: () => Promise<void>;
-    onJobStarted: (id: string, targetName?: string) => void;
+    onJobStarted: TrackJobHandler;
+    watchJobTerminal: WatchTerminalJobHandler;
     toolsInstall: boolean;
     backendType: string;
 }
@@ -30,6 +31,12 @@ interface NetworkDraft {
     connected: boolean;
 }
 
+interface InfoRowData {
+    label: string;
+    value: string;
+    mono?: boolean;
+}
+
 const TOOLS_LABELS: Record<string, { label: string; ok: boolean }> = {
     toolsOk: { label: 'OK', ok: true },
     toolsOld: { label: 'Outdated', ok: true },
@@ -45,7 +52,11 @@ function formatMemory(memoryMB: number): string {
 }
 
 function detailPieces(values: Array<string | null | undefined | false>): string {
-    return values.filter(Boolean).join(' • ');
+    return values.filter((value): value is string => Boolean(value)).join(' • ');
+}
+
+function compactItems<T>(items: Array<T | null | undefined | false>): T[] {
+    return items.filter((item): item is T => Boolean(item));
 }
 
 function normalizeFirmwareChoice(raw: string | undefined): string {
@@ -120,7 +131,7 @@ function networkOptionLabel(option: manager.VMNetworkOption): string {
     return detailPieces([option.name, option.group, option.type]) || option.name;
 }
 
-export default function VMInfoTab({ vm, onRefresh, onJobStarted, toolsInstall, backendType }: Props) {
+export default function VMInfoTab({ vm, onRefresh, onJobStarted, watchJobTerminal, toolsInstall, backendType }: Props) {
     const [busyByVM, setBusyByVM] = useState<Record<string, PowerAction | null>>({});
     const [toolsBusyByVM, setToolsBusyByVM] = useState<Record<string, boolean>>({});
     const [configBusy, setConfigBusy] = useState(false);
@@ -132,8 +143,7 @@ export default function VMInfoTab({ vm, onRefresh, onJobStarted, toolsInstall, b
     const [networkBusy, setNetworkBusy] = useState(false);
     const [networkDraft, setNetworkDraft] = useState<NetworkDraft>({ networkId: '', connected: true });
     const [errorByVM, setErrorByVM] = useState<Record<string, string>>({});
-    const watchTerminalJob = useTerminalJob();
-
+    const jobTargetName = vm.name || vm.ref;
     const tools = TOOLS_LABELS[vm.toolsStatus] ?? { label: vm.toolsStatus, ok: false };
     const busy = busyByVM[vm.ref] ?? null;
     const toolsBusy = toolsBusyByVM[vm.ref] ?? false;
@@ -161,26 +171,29 @@ export default function VMInfoTab({ vm, onRefresh, onJobStarted, toolsInstall, b
                 : { label: 'Starting', tone: 'yellow' as BadgeTone };
     const showGuestOpsWarmupNote = isOn && !vm.guestOpsReady;
 
-    const placementRows = [
+    const placementRows = compactItems<InfoRowData>([
         vm.displayPath ? { label: 'Path', value: vm.displayPath } : null,
         vm.hostName ? { label: 'Host', value: vm.hostName } : null,
         vm.datastoreNames?.length ? { label: vm.datastoreNames.length > 1 ? 'Datastores' : 'Datastore', value: vm.datastoreNames.join(', ') } : null,
         { label: refLabel, value: backendType === 'workstation' ? (vm.vmxPath || vm.ref) : vm.ref, mono: true },
-    ].filter(Boolean) as Array<{ label: string; value: string; mono?: boolean }>;
+    ]);
 
-    const identityRows = [
-        vm.guestHostname ? { label: 'Hostname', value: vm.guestHostname } : null,
-        vm.firmware ? { label: 'Firmware', value: vm.firmware } : null,
+    const hardwareIdentityRows = compactItems<InfoRowData>([
         vm.hardwareVersion ? { label: 'Hardware', value: vm.hardwareVersion } : null,
         vm.uuid ? { label: 'UUID', value: vm.uuid, mono: true } : null,
-    ].filter(Boolean) as Array<{ label: string; value: string; mono?: boolean }>;
+    ]);
 
-    const overviewRows = [
+    const overviewRows = compactItems<InfoRowData>([
         { label: 'Guest OS', value: vm.guestOS || 'Unknown guest' },
         vm.guestHostname ? { label: 'Hostname', value: vm.guestHostname } : null,
         { label: 'Primary IP', value: vm.ipAddress || 'No IP reported' },
-        { label: 'Compute', value: `${vm.numCPU} vCPU${vm.numCPU !== 1 ? 's' : ''} • ${formatMemory(vm.memoryMB)}` },
-    ].filter(Boolean) as Array<{ label: string; value: string }>;
+    ]);
+
+    const configurationSummaryRows = compactItems<InfoRowData>([
+        { label: 'CPU', value: `${vm.numCPU} vCPU${vm.numCPU !== 1 ? 's' : ''}` },
+        { label: 'Memory', value: formatMemory(vm.memoryMB) },
+        { label: 'Firmware', value: vm.firmware || 'BIOS' },
+    ]);
 
     const memoryMB = parseDraftMemoryMB(configDraft);
     const numCPU = Number.parseInt(configDraft.numCPU, 10);
@@ -213,6 +226,7 @@ export default function VMInfoTab({ vm, onRefresh, onJobStarted, toolsInstall, b
     const hasNetworkChanges = !!activeNetworkAdapter &&
         (networkDraft.networkId !== (activeNetworkAdapter.networkId || '') || networkDraft.connected !== activeNetworkAdapter.connected);
     const canSaveNetwork = !!activeNetworkAdapter && canEditNetwork && !networkBusy && networkDraft.networkId !== '' && hasNetworkChanges;
+    const hasConfigNotes = !!vm.notes?.trim();
 
     useEffect(() => {
         setConfigDraft(buildConfigDraft(vm));
@@ -241,48 +255,64 @@ export default function VMInfoTab({ vm, onRefresh, onJobStarted, toolsInstall, b
         });
     }, [activeNetworkAdapter, networkBusy]);
 
-    async function runAction(action: PowerAction, fn: () => Promise<string>) {
-        setErrorByVM(prev => ({ ...prev, [vm.ref]: '' }));
+    function setVMError(message: string) {
+        setErrorByVM(prev => ({ ...prev, [vm.ref]: message }));
+    }
+
+    function clearVMError() {
+        setVMError('');
+    }
+
+    function setPowerBusy(action: PowerAction | null) {
         setBusyByVM(prev => ({ ...prev, [vm.ref]: action }));
+    }
+
+    function setToolsBusy(loading: boolean) {
+        setToolsBusyByVM(prev => ({ ...prev, [vm.ref]: loading }));
+    }
+
+    async function runAction(action: PowerAction, fn: () => Promise<string>) {
+        clearVMError();
+        setPowerBusy(action);
         try {
             const id = await fn();
-            onJobStarted(id, vm.name || vm.ref);
-            watchTerminalJob(id, (job: any) => {
-                if (job.status === 'done') {
-                    void onRefresh().finally(() => {
-                        setBusyByVM(prev => ({ ...prev, [vm.ref]: null }));
-                    });
-                } else if (job.status === 'failed' || job.status === 'cancelled') {
-                    setBusyByVM(prev => ({ ...prev, [vm.ref]: null }));
-                    setErrorByVM(prev => ({ ...prev, [vm.ref]: job.error || 'Operation failed' }));
+            onJobStarted(id, jobTargetName);
+            watchJobTerminal(id, job => {
+                if (job.status !== 'done') {
+                    setPowerBusy(null);
+                    setVMError(job.error || 'Operation failed');
+                    return;
                 }
+
+                void onRefresh().finally(() => {
+                    setPowerBusy(null);
+                });
             });
         } catch (e: any) {
-            setErrorByVM(prev => ({ ...prev, [vm.ref]: String(e) }));
-            setBusyByVM(prev => ({ ...prev, [vm.ref]: null }));
+            setVMError(String(e));
+            setPowerBusy(null);
         }
     }
 
     async function handleInstallTools() {
-        setErrorByVM(prev => ({ ...prev, [vm.ref]: '' }));
-        setToolsBusyByVM(prev => ({ ...prev, [vm.ref]: true }));
+        clearVMError();
+        setToolsBusy(true);
         try {
             const jobId = await VMInstallTools(vm.ref);
-            onJobStarted(jobId, vm.name || vm.ref);
-            watchTerminalJob(jobId, (job: any) => {
-                if (job.status === 'done' || job.status === 'failed' || job.status === 'cancelled') {
-                    setToolsBusyByVM(prev => ({ ...prev, [vm.ref]: false }));
-                    if (job.status === 'done') {
-                        void onRefresh();
-                    }
-                    if (job.status === 'failed') {
-                        setErrorByVM(prev => ({ ...prev, [vm.ref]: job.error || 'Tools installation failed' }));
-                    }
+            onJobStarted(jobId, jobTargetName);
+            watchJobTerminal(jobId, job => {
+                setToolsBusy(false);
+                if (job.status === 'done') {
+                    void onRefresh();
+                    return;
+                }
+                if (job.status === 'failed') {
+                    setVMError(job.error || 'Tools installation failed');
                 }
             });
         } catch (e: any) {
-            setErrorByVM(prev => ({ ...prev, [vm.ref]: String(e) }));
-            setToolsBusyByVM(prev => ({ ...prev, [vm.ref]: false }));
+            setVMError(String(e));
+            setToolsBusy(false);
         }
     }
 
@@ -291,7 +321,7 @@ export default function VMInfoTab({ vm, onRefresh, onJobStarted, toolsInstall, b
             return;
         }
 
-        setErrorByVM(prev => ({ ...prev, [vm.ref]: '' }));
+        clearVMError();
         setConfigBusy(true);
         try {
             const jobId = await VMUpdateConfig({
@@ -303,19 +333,20 @@ export default function VMInfoTab({ vm, onRefresh, onJobStarted, toolsInstall, b
                 firmware: normalizeFirmwareChoice(configDraft.firmware),
             });
 
-            onJobStarted(jobId, vm.name || vm.ref);
-            watchTerminalJob(jobId, (job: any) => {
-                if (job.status === 'done') {
+            onJobStarted(jobId, jobTargetName);
+            watchJobTerminal(jobId, job => {
+                if (job.status !== 'done') {
                     setConfigBusy(false);
-                    setConfigEditing(false);
-                    void onRefresh();
-                } else if (job.status === 'failed' || job.status === 'cancelled') {
-                    setConfigBusy(false);
-                    setErrorByVM(prev => ({ ...prev, [vm.ref]: job.error || 'Configuration update failed' }));
+                    setVMError(job.error || 'Configuration update failed');
+                    return;
                 }
+
+                setConfigBusy(false);
+                setConfigEditing(false);
+                void onRefresh();
             });
         } catch (e: any) {
-            setErrorByVM(prev => ({ ...prev, [vm.ref]: String(e) }));
+            setVMError(String(e));
             setConfigBusy(false);
         }
     }
@@ -330,7 +361,7 @@ export default function VMInfoTab({ vm, onRefresh, onJobStarted, toolsInstall, b
     }
 
     async function beginNetworkEdit(adapter: manager.VMNetworkAdapter) {
-        setErrorByVM(prev => ({ ...prev, [vm.ref]: '' }));
+        clearVMError();
         setNetworkEditingAdapterId(adapter.id);
         setNetworkDraft({
             networkId: adapter.networkId || '',
@@ -349,7 +380,7 @@ export default function VMInfoTab({ vm, onRefresh, onJobStarted, toolsInstall, b
             setNetworkEditingAdapterId('');
             setNetworkOptions([]);
             setNetworkDraft({ networkId: '', connected: adapter.connected });
-            setErrorByVM(prev => ({ ...prev, [vm.ref]: String(e) }));
+            setVMError(String(e));
         } finally {
             setNetworkOptionsLoading(false);
         }
@@ -372,7 +403,7 @@ export default function VMInfoTab({ vm, onRefresh, onJobStarted, toolsInstall, b
             return;
         }
 
-        setErrorByVM(prev => ({ ...prev, [vm.ref]: '' }));
+        clearVMError();
         setNetworkBusy(true);
         try {
             const jobId = await VMUpdateNetwork({
@@ -382,19 +413,20 @@ export default function VMInfoTab({ vm, onRefresh, onJobStarted, toolsInstall, b
                 connected: networkDraft.connected,
             });
 
-            onJobStarted(jobId, vm.name || vm.ref);
-            watchTerminalJob(jobId, (job: any) => {
-                if (job.status === 'done') {
+            onJobStarted(jobId, jobTargetName);
+            watchJobTerminal(jobId, job => {
+                if (job.status !== 'done') {
                     setNetworkBusy(false);
-                    handleCancelNetwork();
-                    void onRefresh();
-                } else if (job.status === 'failed' || job.status === 'cancelled') {
-                    setNetworkBusy(false);
-                    setErrorByVM(prev => ({ ...prev, [vm.ref]: job.error || 'Network update failed' }));
+                    setVMError(job.error || 'Network update failed');
+                    return;
                 }
+
+                setNetworkBusy(false);
+                handleCancelNetwork();
+                void onRefresh();
             });
         } catch (e: any) {
-            setErrorByVM(prev => ({ ...prev, [vm.ref]: String(e) }));
+            setVMError(String(e));
             setNetworkBusy(false);
         }
     }
@@ -404,7 +436,6 @@ export default function VMInfoTab({ vm, onRefresh, onJobStarted, toolsInstall, b
             <section className="vm-info-card vm-info-card--wide">
                 <div className="vm-info-card-header">
                     <h3 className="vm-info-card-title">Power</h3>
-                    <p className="vm-info-card-subtitle">The main VM power controls stay at the top for quick access.</p>
                 </div>
                 <div className="power-actions">
                     <button
@@ -447,7 +478,7 @@ export default function VMInfoTab({ vm, onRefresh, onJobStarted, toolsInstall, b
                         </div>
                         {!configEditing && (
                             <button className="btn-secondary" onClick={() => setConfigEditing(true)}>
-                                Edit Configuration
+                                Edit
                             </button>
                         )}
                     </div>
@@ -456,18 +487,19 @@ export default function VMInfoTab({ vm, onRefresh, onJobStarted, toolsInstall, b
                 {!configEditing ? (
                     <div className="vm-info-cluster-grid">
                         <div className="vm-info-cluster">
-                            <div className="vm-info-cluster-title">Editable fields</div>
+                            <div className="vm-info-cluster-title">Current Settings</div>
                             <div className="vm-info-rows">
-                                <InfoRow label="Name" value={vm.name} />
-                                <InfoRow label="CPU" value={`${vm.numCPU} vCPU${vm.numCPU !== 1 ? 's' : ''}`} />
-                                <InfoRow label="Memory" value={formatMemory(vm.memoryMB)} />
-                                <InfoRow label="Firmware" value={vm.firmware || 'BIOS'} />
+                                {configurationSummaryRows.map(row => (
+                                    <InfoRow key={row.label} label={row.label} value={row.value} mono={row.mono} />
+                                ))}
                             </div>
                         </div>
-                        <div className="vm-info-cluster">
-                            <div className="vm-info-cluster-title">Notes</div>
-                            <div className="vm-info-notes-body">{configNotesSummary}</div>
-                        </div>
+                        {hasConfigNotes && (
+                            <div className="vm-info-cluster">
+                                <div className="vm-info-cluster-title">Notes</div>
+                                <div className="vm-info-notes-body">{configNotesSummary}</div>
+                            </div>
+                        )}
                     </div>
                 ) : (
                     <div className="vm-config-form">
@@ -588,8 +620,7 @@ export default function VMInfoTab({ vm, onRefresh, onJobStarted, toolsInstall, b
             <div className="vm-info-overview-grid">
                 <section className="vm-info-card">
                     <div className="vm-info-card-header">
-                        <h3 className="vm-info-card-title">Overview</h3>
-                        <p className="vm-info-card-subtitle">The core guest and compute details you usually need first.</p>
+                        <h3 className="vm-info-card-title">Guest</h3>
                     </div>
                     <div className="vm-info-rows">
                         {overviewRows.map(row => (
@@ -601,7 +632,6 @@ export default function VMInfoTab({ vm, onRefresh, onJobStarted, toolsInstall, b
                 <section className="vm-info-card">
                     <div className="vm-info-card-header">
                         <h3 className="vm-info-card-title">Status</h3>
-                        <p className="vm-info-card-subtitle">Operational state, Tools health, and guest-ops readiness.</p>
                     </div>
                     <div className="vm-info-status-grid">
                         <div className="vm-info-status-item">
@@ -623,12 +653,12 @@ export default function VMInfoTab({ vm, onRefresh, onJobStarted, toolsInstall, b
                         <div className="vm-info-status-notes">
                             {showGuestToolsNote && (
                                 <div className="vm-info-card-subtitle">
-                                    For Linux and macOS guests, install open-vm-tools from the guest package manager.
+                                    Linux and macOS guests usually need `open-vm-tools` installed inside the guest.
                                 </div>
                             )}
                             {showGuestOpsWarmupNote && (
                                 <div className="vm-info-card-subtitle">
-                                    Still warming up. You can try the Guest Ops tabs and get the real backend result.
+                                    Guest Ops is still warming up.
                                 </div>
                             )}
                         </div>
@@ -648,8 +678,7 @@ export default function VMInfoTab({ vm, onRefresh, onJobStarted, toolsInstall, b
             <div className="vm-info-grid">
                 <section className="vm-info-card vm-info-card--wide">
                     <div className="vm-info-card-header">
-                        <h3 className="vm-info-card-title">Placement & Identity</h3>
-                        <p className="vm-info-card-subtitle">Where this VM lives plus the hardware and guest identity around it.</p>
+                        <h3 className="vm-info-card-title">Placement</h3>
                     </div>
                     <div className="vm-info-cluster-grid">
                         <div className="vm-info-cluster">
@@ -661,22 +690,14 @@ export default function VMInfoTab({ vm, onRefresh, onJobStarted, toolsInstall, b
                             </div>
                         </div>
 
-                        {(identityRows.length > 0 || vm.notes) && (
+                        {hardwareIdentityRows.length > 0 && (
                             <div className="vm-info-cluster">
-                                <div className="vm-info-cluster-title">Identity</div>
-                                {identityRows.length > 0 && (
-                                    <div className="vm-info-rows">
-                                        {identityRows.map(row => (
-                                            <InfoRow key={row.label} label={row.label} value={row.value} mono={row.mono} />
-                                        ))}
-                                    </div>
-                                )}
-                                {vm.notes && (
-                                    <div className="vm-info-notes">
-                                        <div className="vm-info-row-label">Notes</div>
-                                        <div className="vm-info-notes-body">{vm.notes}</div>
-                                    </div>
-                                )}
+                                <div className="vm-info-cluster-title">Hardware</div>
+                                <div className="vm-info-rows">
+                                    {hardwareIdentityRows.map(row => (
+                                        <InfoRow key={row.label} label={row.label} value={row.value} mono={row.mono} />
+                                    ))}
+                                </div>
                             </div>
                         )}
                     </div>
@@ -688,7 +709,6 @@ export default function VMInfoTab({ vm, onRefresh, onJobStarted, toolsInstall, b
                             <div className="vm-info-card-header-row">
                                 <div>
                                     <h3 className="vm-info-card-title">Network</h3>
-                                    <p className="vm-info-card-subtitle">Per-adapter attachment and connection state at a glance.</p>
                                 </div>
                                 <span className="vm-config-meta">{networkStateMessage}</span>
                             </div>
