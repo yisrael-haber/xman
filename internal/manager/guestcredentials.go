@@ -50,10 +50,3 @@ func resolveDownloadRequestCredential(req DownloadRequest) (DownloadRequest, err
 	}
 	return req, nil
 }
-
-func resolveInstallRequestCredential(req InstallRequest) (InstallRequest, error) {
-	if err := resolveRequestCredential(req.CredentialLabel, &req.Username, &req.Password); err != nil {
-		return InstallRequest{}, err
-	}
-	return req, nil
-}

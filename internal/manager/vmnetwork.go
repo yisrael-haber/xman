@@ -35,7 +35,7 @@ func validateVMNetworkUpdateRequest(req VMNetworkUpdateRequest) error {
 	return nil
 }
 
-func (m *Manager) VMNetworkOptions(vmRef string) ([]VMNetworkOption, error) {
+func (m *Manager) vmNetworkOptions(vmRef string) ([]VMNetworkOption, error) {
 	if strings.TrimSpace(vmRef) == "" {
 		return nil, fmt.Errorf("missing VM reference")
 	}
@@ -46,7 +46,7 @@ func (m *Manager) VMNetworkOptions(vmRef string) ([]VMNetworkOption, error) {
 	return b.ListVMNetworkOptions(m.operationContext(), vmRef)
 }
 
-func (m *Manager) VMUpdateNetwork(req VMNetworkUpdateRequest) string {
+func (m *Manager) vmUpdateNetwork(req VMNetworkUpdateRequest) string {
 	return m.submitJob("network", "Update VM Network", func(ctx context.Context, emit jobs.EmitFn) error {
 		if err := validateVMNetworkUpdateRequest(req); err != nil {
 			return err

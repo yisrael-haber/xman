@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { manager } from '../../../../wailsjs/go/models';
-import { Upload, Download, SSHUpload, SSHDownload } from '../../../../wailsjs/go/manager/Manager';
+import { Upload, Download, SSHUpload, SSHDownload } from '../../../../wailsjs/go/manager/API';
 import { OpenFileDialog, SaveFileDialog } from '../../../../wailsjs/go/main/App';
 import type { VMTransportState } from '../../../hooks/useVMTransport';
 

@@ -22,7 +22,7 @@ type DeploySSHKeyRequest struct {
 
 // DeploySSHKey uploads the named key's public half to the guest VM and
 // appends it to authorized_keys for the connecting user.
-func (m *Manager) DeploySSHKey(req DeploySSHKeyRequest) string {
+func (m *Manager) deploySSHKey(req DeploySSHKeyRequest) string {
 	return m.submitJob("deploy-key", "Deploy Key: "+req.Label, func(ctx context.Context, emit jobs.EmitFn) error {
 		meta, err := config.GetKey(req.Label)
 		if err != nil {

@@ -469,30 +469,6 @@ export namespace manager {
 	        this.vmCount = source["vmCount"];
 	    }
 	}
-	export class InstallRequest {
-	    vmRef: string;
-	    credentialLabel: string;
-	    username: string;
-	    password: string;
-	    localPath: string;
-	    guestOS: string;
-	    command: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new InstallRequest(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.vmRef = source["vmRef"];
-	        this.credentialLabel = source["credentialLabel"];
-	        this.username = source["username"];
-	        this.password = source["password"];
-	        this.localPath = source["localPath"];
-	        this.guestOS = source["guestOS"];
-	        this.command = source["command"];
-	    }
-	}
 	export class PortGroupInfo {
 	    name: string;
 	    vlan: string;
@@ -602,26 +578,6 @@ export namespace manager {
 	        this.password = source["password"];
 	        this.command = source["command"];
 	        this.guestOS = source["guestOS"];
-	    }
-	}
-	export class SSHInstallRequest {
-	    host: string;
-	    keyLabel: string;
-	    localPath: string;
-	    guestOS: string;
-	    command: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new SSHInstallRequest(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.host = source["host"];
-	        this.keyLabel = source["keyLabel"];
-	        this.localPath = source["localPath"];
-	        this.guestOS = source["guestOS"];
-	        this.command = source["command"];
 	    }
 	}
 	export class SSHRunRequest {

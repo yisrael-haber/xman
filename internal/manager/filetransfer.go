@@ -27,7 +27,7 @@ type DownloadRequest struct {
 	LocalPath       string `json:"localPath"`
 }
 
-func (m *Manager) Upload(req UploadRequest) string {
+func (m *Manager) upload(req UploadRequest) string {
 	label := "Upload: " + req.LocalPath + " → " + req.GuestPath
 	return m.submitJob("filetransfer", label, func(ctx context.Context, emit jobs.EmitFn) error {
 		b, err := m.getGuestOpsBackend()
@@ -42,7 +42,7 @@ func (m *Manager) Upload(req UploadRequest) string {
 	})
 }
 
-func (m *Manager) Download(req DownloadRequest) string {
+func (m *Manager) download(req DownloadRequest) string {
 	label := "Download: " + req.GuestPath + " → " + req.LocalPath
 	return m.submitJob("filetransfer", label, func(ctx context.Context, emit jobs.EmitFn) error {
 		b, err := m.getGuestOpsBackend()

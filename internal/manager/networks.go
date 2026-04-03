@@ -49,7 +49,7 @@ func AppendUnique(slice []string, s string) []string {
 	return append(slice, s)
 }
 
-func (m *Manager) InventoryNetworks() (NetworkSummary, error) {
+func (m *Manager) inventoryNetworks() (NetworkSummary, error) {
 	b, err := m.getBackend()
 	if err != nil {
 		return NetworkSummary{}, err

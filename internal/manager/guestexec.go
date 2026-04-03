@@ -16,7 +16,7 @@ type RunRequest struct {
 	GuestOS         string `json:"guestOS"` // used by backends to select the right shell
 }
 
-func (m *Manager) GuestRun(req RunRequest) string {
+func (m *Manager) guestRun(req RunRequest) string {
 	return m.submitJob("guestexec", summarizeCommandLabel("$ ", req.Command), func(ctx context.Context, emit jobs.EmitFn) error {
 		b, err := m.getGuestOpsBackend()
 		if err != nil {

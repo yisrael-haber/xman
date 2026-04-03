@@ -43,7 +43,7 @@ type VMInfo struct {
 	NetworkAdapters []VMNetworkAdapter `json:"networkAdapters,omitempty"`
 }
 
-func (m *Manager) VMList() ([]VMInfo, error) {
+func (m *Manager) vmList() ([]VMInfo, error) {
 	b, err := m.getBackend()
 	if err != nil {
 		return nil, err
@@ -51,7 +51,7 @@ func (m *Manager) VMList() ([]VMInfo, error) {
 	return b.ListVMs(m.operationContext())
 }
 
-func (m *Manager) VMGet(vmRef string) (VMInfo, error) {
+func (m *Manager) vmGet(vmRef string) (VMInfo, error) {
 	b, err := m.getBackend()
 	if err != nil {
 		return VMInfo{}, err
@@ -115,7 +115,7 @@ func waitForPowerState(ctx context.Context, b Backend, emit jobs.EmitFn, vmRef, 
 	}
 }
 
-func (m *Manager) VMPowerOn(vmRef string) string {
+func (m *Manager) vmPowerOn(vmRef string) string {
 	return m.submitJob("power", "Power On", func(ctx context.Context, emit jobs.EmitFn) error {
 		b, err := m.getBackend()
 		if err != nil {
@@ -129,7 +129,7 @@ func (m *Manager) VMPowerOn(vmRef string) string {
 	})
 }
 
-func (m *Manager) VMPowerOff(vmRef string) string {
+func (m *Manager) vmPowerOff(vmRef string) string {
 	return m.submitJob("power", "Power Off", func(ctx context.Context, emit jobs.EmitFn) error {
 		b, err := m.getBackend()
 		if err != nil {
@@ -143,7 +143,7 @@ func (m *Manager) VMPowerOff(vmRef string) string {
 	})
 }
 
-func (m *Manager) VMReset(vmRef string) string {
+func (m *Manager) vmReset(vmRef string) string {
 	return m.submitJob("power", "Reset", func(ctx context.Context, emit jobs.EmitFn) error {
 		b, err := m.getBackend()
 		if err != nil {
@@ -154,7 +154,7 @@ func (m *Manager) VMReset(vmRef string) string {
 	})
 }
 
-func (m *Manager) VMSuspend(vmRef string) string {
+func (m *Manager) vmSuspend(vmRef string) string {
 	return m.submitJob("power", "Suspend", func(ctx context.Context, emit jobs.EmitFn) error {
 		b, err := m.getBackend()
 		if err != nil {

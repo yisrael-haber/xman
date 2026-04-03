@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { manager } from '../../../../wailsjs/go/models';
-import { SnapshotList, SnapshotCreate, SnapshotRevert, SnapshotDelete } from '../../../../wailsjs/go/manager/Manager';
+import { SnapshotList, SnapshotCreate, SnapshotRevert, SnapshotDelete } from '../../../../wailsjs/go/manager/API';
 import type { TrackJobHandler, WatchTerminalJobHandler } from '../../../hooks/useJobs';
 
 interface Props {

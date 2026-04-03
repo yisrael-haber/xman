@@ -14,33 +14,34 @@ import (
 )
 
 // App wires together the Manager, job system, and connection lifecycle.
-// All VM/feature operations live on Manager; connection, settings, and
-// file dialogs live here.
+// VM feature bindings are provided separately; App owns connection lifecycle,
+// settings, dialogs, and other top-level desktop actions.
 type App struct {
 	ctx     context.Context
-	Manager *manager.Manager
-	Jobs    *jobs.Manager
+	manager *manager.Manager
+	jobs    *jobs.Manager
 }
 
 // NewApp constructs the App. The backend is nil until Connect is called.
 func NewApp() *App {
 	jobManager := jobs.NewManager(nil)
+	managerService := manager.New(jobManager)
 	return &App{
-		Manager: manager.New(jobManager),
-		Jobs:    jobManager,
+		manager: managerService,
+		jobs:    jobManager,
 	}
 }
 
 // startup is called by Wails after the frontend is ready.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
-	a.Jobs.SetContext(ctx)
-	a.Manager.SetContext(ctx)
+	a.jobs.SetContext(ctx)
+	a.manager.SetContext(ctx)
 }
 
 // shutdown is called by Wails when the application is closing.
 func (a *App) shutdown(ctx context.Context) {
-	_ = a.Manager.Disconnect(ctx)
+	_ = a.manager.Disconnect(ctx)
 }
 
 // --- Connection ---
@@ -68,8 +69,8 @@ func (a *App) Connect(req config.ConnectRequest) (config.ConnectionInfo, error) 
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	a.Manager.ReplaceBackend(ctx, b)
-	return a.Manager.ConnectionInfo(), nil
+	a.manager.ReplaceBackend(ctx, b)
+	return a.manager.ConnectionInfo(), nil
 }
 
 // Disconnect tears down the active backend.
@@ -78,13 +79,13 @@ func (a *App) Disconnect() error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return a.Manager.Disconnect(ctx)
+	return a.manager.Disconnect(ctx)
 }
 
 // ConnectionInfo returns the current connection state and capabilities.
 // A zero-value (DisplayName == "") means not connected.
 func (a *App) ConnectionInfo() config.ConnectionInfo {
-	return a.Manager.ConnectionInfo()
+	return a.manager.ConnectionInfo()
 }
 
 // --- Settings ---
@@ -120,7 +121,7 @@ func (a *App) SaveFileDialog(title, defaultFilename string) (string, error) {
 }
 
 func (a *App) OpenVMConsole(vmRef string) error {
-	consoleURL, err := a.Manager.VMConsoleURL(vmRef)
+	info, err := manager.NewAPI(a.manager).VMConsoleInfo(vmRef)
 	if err != nil {
 		return err
 	}
@@ -129,7 +130,7 @@ func (a *App) OpenVMConsole(vmRef string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	runtime.BrowserOpenURL(ctx, consoleURL)
+	runtime.BrowserOpenURL(ctx, info.URL)
 	return nil
 }
 

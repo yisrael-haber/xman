@@ -23,19 +23,19 @@ type SSHTransferRequest struct {
 	GuestPath string `json:"guestPath"`
 }
 
-func (m *Manager) SSHRun(req SSHRunRequest) string {
+func (m *Manager) sshRun(req SSHRunRequest) string {
 	return m.submitJob("exec", summarizeCommandLabel("SSH: ", req.Command), func(ctx context.Context, emit jobs.EmitFn) error {
 		return sshtransport.Run(ctx, emit, req.Host, req.KeyLabel, req.Command)
 	})
 }
 
-func (m *Manager) SSHUpload(req SSHTransferRequest) string {
+func (m *Manager) sshUpload(req SSHTransferRequest) string {
 	return m.submitJob("upload", "SSH Upload: "+filepath.Base(req.LocalPath), func(ctx context.Context, emit jobs.EmitFn) error {
 		return sshtransport.Upload(ctx, emit, req.Host, req.KeyLabel, req.LocalPath, req.GuestPath)
 	})
 }
 
-func (m *Manager) SSHDownload(req SSHTransferRequest) string {
+func (m *Manager) sshDownload(req SSHTransferRequest) string {
 	return m.submitJob("download", "SSH Download: "+req.GuestPath, func(ctx context.Context, emit jobs.EmitFn) error {
 		return sshtransport.Download(ctx, emit, req.Host, req.KeyLabel, req.GuestPath, req.LocalPath)
 	})

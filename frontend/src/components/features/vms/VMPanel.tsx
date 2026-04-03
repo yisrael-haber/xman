@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { manager } from '../../../../wailsjs/go/models';
-import { VMGet, VMList } from '../../../../wailsjs/go/manager/Manager';
+import { VMGet, VMList } from '../../../../wailsjs/go/manager/API';
 import VMBrowser from './VMBrowser';
 import VMInfoTab from './VMInfoTab';
 import FileTransferTab from './FileTransferTab';

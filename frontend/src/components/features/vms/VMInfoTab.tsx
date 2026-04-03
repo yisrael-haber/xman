@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { manager } from '../../../../wailsjs/go/models';
-import { VMPowerOn, VMPowerOff, VMReset, VMSuspend, VMInstallTools, VMNetworkOptions, VMUpdateConfig, VMUpdateNetwork } from '../../../../wailsjs/go/manager/Manager';
+import { VMPowerOn, VMPowerOff, VMReset, VMSuspend, VMInstallTools, VMNetworkOptions, VMUpdateConfig, VMUpdateNetwork } from '../../../../wailsjs/go/manager/API';
 import { formatPowerState } from '../../../utils/vmStatus';
 import type { TrackJobHandler, WatchTerminalJobHandler } from '../../../hooks/useJobs';
 

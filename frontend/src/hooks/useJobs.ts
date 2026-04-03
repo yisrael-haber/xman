@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { EventsOn } from '../../wailsjs/runtime/runtime';
-import { JobCancel, JobDismiss, JobGet, JobList } from '../../wailsjs/go/jobs/Manager';
+import { JobCancel, JobDismiss, JobGet, JobList } from '../../wailsjs/go/jobs/API';
 
 export interface LogEntry {
     progress: number;

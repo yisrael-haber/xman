@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { manager } from '../../../../wailsjs/go/models';
 import { OpenVMConsole } from '../../../../wailsjs/go/main/App';
-import { VMConsoleInfo } from '../../../../wailsjs/go/manager/Manager';
+import { VMConsoleInfo } from '../../../../wailsjs/go/manager/API';
 
 interface Props {
     vm: manager.VMInfo;

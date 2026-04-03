@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { manager } from '../../../../wailsjs/go/models';
-import { DeploySSHKey } from '../../../../wailsjs/go/manager/Manager';
+import { DeploySSHKey } from '../../../../wailsjs/go/manager/API';
 import type { VMTransportState } from '../../../hooks/useVMTransport';
 
 interface Props {

@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { config, manager } from '../../../../wailsjs/go/models';
-import { GuestRun, SSHRun } from '../../../../wailsjs/go/manager/Manager';
-import { JobCancel } from '../../../../wailsjs/go/jobs/Manager';
+import { GuestRun, SSHRun } from '../../../../wailsjs/go/manager/API';
+import { JobCancel } from '../../../../wailsjs/go/jobs/API';
 import { GetScript, LaunchInteractiveSSHSession, ListScripts } from '../../../../wailsjs/go/main/App';
 import { ClipboardSetText } from '../../../../wailsjs/runtime/runtime';
 import type { TrackJobHandler, WatchTerminalJobHandler } from '../../../hooks/useJobs';

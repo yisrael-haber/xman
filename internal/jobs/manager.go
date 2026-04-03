@@ -31,16 +31,6 @@ func (m *Manager) SetContext(ctx context.Context) {
 	m.ctx = ctx
 }
 
-// Submit starts a new job and returns its ID immediately.
-// The work function receives a cancellable context and an emit function for progress.
-// The job context is derived from the Wails app context so jobs are cancelled on shutdown.
-func (m *Manager) Submit(feature, label string, fn func(ctx context.Context, emit EmitFn) error) string {
-	m.mu.RLock()
-	parentCtx := m.ctx
-	m.mu.RUnlock()
-	return m.SubmitWithParent(parentCtx, feature, label, fn)
-}
-
 // SubmitWithParent starts a new job using the provided parent context.
 // If parentCtx is nil, the Wails app context is used as a fallback.
 func (m *Manager) SubmitWithParent(parentCtx context.Context, feature, label string, fn func(ctx context.Context, emit EmitFn) error) string {
@@ -142,6 +132,16 @@ func (m *Manager) List() []*Job {
 	return out
 }
 
+// Dismiss removes a completed/failed/cancelled job from the map.
+func (m *Manager) Dismiss(id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	job, ok := m.jobs[id]
+	if ok && job.Status != StatusRunning {
+		delete(m.jobs, id)
+	}
+}
+
 // emit sends a job update event to the Wails frontend.
 // Event name: "job:<id>" — frontend listens per job ID.
 func (m *Manager) emit(job *Job) {
@@ -153,33 +153,4 @@ func (m *Manager) emit(job *Job) {
 		return
 	}
 	runtime.EventsEmit(ctx, "job:"+event.ID, event)
-}
-
-// --- Wails-exposed methods ---
-
-// JobGet is the Wails binding to fetch a job's current state.
-func (m *Manager) JobGet(id string) *Job {
-	job, _ := m.Get(id)
-	return job
-}
-
-// JobList is the Wails binding to list all jobs.
-func (m *Manager) JobList() []*Job {
-	return m.List()
-}
-
-// JobCancel is the Wails binding to cancel a running job.
-func (m *Manager) JobCancel(id string) {
-	m.Cancel(id)
-}
-
-// JobDismiss removes a completed/failed/cancelled job from the map.
-// Called by the frontend when the user dismisses a finished job.
-func (m *Manager) JobDismiss(id string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	job, ok := m.jobs[id]
-	if ok && job.Status != StatusRunning {
-		delete(m.jobs, id)
-	}
 }

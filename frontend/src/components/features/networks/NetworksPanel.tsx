@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { InventoryNetworks } from '../../../../wailsjs/go/manager/Manager';
+import { InventoryNetworks } from '../../../../wailsjs/go/manager/API';
 import NetworksTab from '../inventory/NetworksTab';
 import { manager } from '../../../../wailsjs/go/models';
 

@@ -246,7 +246,7 @@ func TestVMConsoleURLRejectsUnsupportedBackend(t *testing.T) {
 		},
 	})
 
-	if _, err := m.VMConsoleURL("vm-1"); err == nil || !strings.Contains(err.Error(), "not supported") {
+	if _, err := m.vmConsoleURL("vm-1"); err == nil || !strings.Contains(err.Error(), "not supported") {
 		t.Fatalf("VMConsoleURL() error = %v, want unsupported backend error", err)
 	}
 }
@@ -276,7 +276,7 @@ func TestVMConsoleInfoAddsReachabilityAndRedactedURL(t *testing.T) {
 		},
 	})
 
-	info, err := m.VMConsoleInfo("vm-1")
+	info, err := m.vmConsoleInfo("vm-1")
 	if err != nil {
 		t.Fatalf("VMConsoleInfo() error = %v", err)
 	}
@@ -308,7 +308,7 @@ func TestVMNetworkOptionsUsesBackendImplementation(t *testing.T) {
 		},
 	})
 
-	got, err := m.VMNetworkOptions("vm-42")
+	got, err := m.vmNetworkOptions("vm-42")
 	if err != nil {
 		t.Fatalf("VMNetworkOptions() error = %v", err)
 	}
@@ -336,7 +336,7 @@ func TestVMUpdateNetworkSubmitsJobToBackend(t *testing.T) {
 		},
 	})
 
-	jobID := m.VMUpdateNetwork(req)
+	jobID := m.vmUpdateNetwork(req)
 	if jobID == "" {
 		t.Fatal("VMUpdateNetwork() returned empty job ID")
 	}
@@ -438,7 +438,7 @@ func TestVMPowerOffWaitsForObservedStateBeforeJobCompletes(t *testing.T) {
 	}
 	m.ReplaceBackend(context.Background(), backend)
 
-	jobID := m.VMPowerOff("vm-1")
+	jobID := m.vmPowerOff("vm-1")
 	job := waitForJob(t, jm, jobID)
 
 	if job.Status != jobs.StatusDone {
@@ -482,7 +482,7 @@ func TestSnapshotCreateUsesSharedJobLabelAndCompletes(t *testing.T) {
 	}
 	m.ReplaceBackend(context.Background(), backend)
 
-	jobID := m.SnapshotCreate(CreateSnapshotRequest{
+	jobID := m.snapshotCreate(CreateSnapshotRequest{
 		VMRef: "vm-1",
 		Name:  "before-change",
 	})
@@ -509,7 +509,7 @@ func TestGuestRunJobUsesSharedLabelAndFailureSemantics(t *testing.T) {
 	}
 	m.ReplaceBackend(context.Background(), backend)
 
-	jobID := m.GuestRun(RunRequest{
+	jobID := m.guestRun(RunRequest{
 		VMRef:    "vm-1",
 		Username: "tester",
 		Password: "secret",
@@ -563,7 +563,7 @@ func TestGuestRunResolvesStoredCredentialLabelBeforeDelegating(t *testing.T) {
 	}
 	m.ReplaceBackend(context.Background(), backend)
 
-	jobID := m.GuestRun(RunRequest{
+	jobID := m.guestRun(RunRequest{
 		VMRef:           "vm-1",
 		CredentialLabel: "linux-admin",
 		Command:         "hostname",
@@ -600,7 +600,7 @@ func TestUploadCredentialLookupFailureFailsJobBeforeDelegating(t *testing.T) {
 	}
 	m.ReplaceBackend(context.Background(), backend)
 
-	jobID := m.Upload(UploadRequest{
+	jobID := m.upload(UploadRequest{
 		VMRef:           "vm-1",
 		CredentialLabel: "missing",
 		LocalPath:       "/tmp/local.iso",
@@ -642,7 +642,7 @@ func TestUploadAndDownloadJobsUseExpectedLabels(t *testing.T) {
 	}
 	m.ReplaceBackend(context.Background(), backend)
 
-	uploadID := m.Upload(UploadRequest{
+	uploadID := m.upload(UploadRequest{
 		VMRef:     "vm-1",
 		Username:  "tester",
 		Password:  "secret",
@@ -650,7 +650,7 @@ func TestUploadAndDownloadJobsUseExpectedLabels(t *testing.T) {
 		GuestPath: "/tmp/guest.iso",
 		GuestOS:   "ubuntu-64",
 	})
-	downloadID := m.Download(DownloadRequest{
+	downloadID := m.download(DownloadRequest{
 		VMRef:     "vm-1",
 		Username:  "tester",
 		Password:  "secret",
@@ -672,197 +672,6 @@ func TestUploadAndDownloadJobsUseExpectedLabels(t *testing.T) {
 	}
 	if len(downloadReqs) != 1 || downloadReqs[0].GuestPath != "/tmp/guest.log" {
 		t.Fatalf("download requests = %+v, want one delegated download", downloadReqs)
-	}
-}
-
-func TestInstallAutoCommandUploadsRunsAndCleansUp(t *testing.T) {
-	jm := jobs.NewManager(nil)
-	m := New(jm)
-
-	var uploads []UploadRequest
-	var guestRuns []RunRequest
-	var deletedGuestPaths []string
-	backend := &fakeBackend{
-		backendType: "workstation",
-		displayName: "Local Workstation",
-		uploadFunc: func(ctx context.Context, emit jobs.EmitFn, req UploadRequest) error {
-			uploads = append(uploads, req)
-			emit(100, "Upload complete.")
-			return nil
-		},
-		guestRunFunc: func(ctx context.Context, emit jobs.EmitFn, req RunRequest) error {
-			guestRuns = append(guestRuns, req)
-			emit(100, "Command completed.")
-			return nil
-		},
-		deleteGuestFileFunc: func(ctx context.Context, vmRef, username, password, guestPath string) error {
-			deletedGuestPaths = append(deletedGuestPaths, guestPath)
-			return nil
-		},
-	}
-	m.ReplaceBackend(context.Background(), backend)
-
-	jobID := m.Install(InstallRequest{
-		VMRef:     "vm-1",
-		Username:  "tester",
-		Password:  "secret",
-		LocalPath: "/tmp/agent.deb",
-		GuestOS:   "ubuntu-64",
-	})
-	job := waitForJob(t, jm, jobID)
-
-	if job.Status != jobs.StatusDone {
-		t.Fatalf("job status = %q, want %q", job.Status, jobs.StatusDone)
-	}
-	if job.Label != "Install: agent.deb" {
-		t.Fatalf("job label = %q, want %q", job.Label, "Install: agent.deb")
-	}
-	if len(uploads) != 1 {
-		t.Fatalf("upload calls = %d, want %d", len(uploads), 1)
-	}
-	if uploads[0].GuestPath != "/tmp/agent.deb" {
-		t.Fatalf("upload guest path = %q, want %q", uploads[0].GuestPath, "/tmp/agent.deb")
-	}
-	if len(guestRuns) != 1 {
-		t.Fatalf("guest run calls = %d, want %d install run", len(guestRuns), 1)
-	}
-	if !strings.Contains(guestRuns[0].Command, `dpkg -i "/tmp/agent.deb"`) {
-		t.Fatalf("install command = %q, want deb install command", guestRuns[0].Command)
-	}
-	if len(deletedGuestPaths) != 1 || deletedGuestPaths[0] != "/tmp/agent.deb" {
-		t.Fatalf("deleted guest paths = %v, want [%q]", deletedGuestPaths, "/tmp/agent.deb")
-	}
-}
-
-func TestInstallUploadFailureStopsBeforeRun(t *testing.T) {
-	jm := jobs.NewManager(nil)
-	m := New(jm)
-
-	guestRunCalls := 0
-	backend := &fakeBackend{
-		backendType: "workstation",
-		displayName: "Local Workstation",
-		uploadFunc: func(ctx context.Context, emit jobs.EmitFn, req UploadRequest) error {
-			return errors.New("disk full")
-		},
-		guestRunFunc: func(ctx context.Context, emit jobs.EmitFn, req RunRequest) error {
-			guestRunCalls++
-			return nil
-		},
-	}
-	m.ReplaceBackend(context.Background(), backend)
-
-	jobID := m.Install(InstallRequest{
-		VMRef:     "vm-1",
-		Username:  "tester",
-		Password:  "secret",
-		LocalPath: "/tmp/agent.deb",
-		GuestOS:   "ubuntu-64",
-	})
-	job := waitForJob(t, jm, jobID)
-
-	if job.Status != jobs.StatusFailed {
-		t.Fatalf("job status = %q, want %q", job.Status, jobs.StatusFailed)
-	}
-	if !strings.Contains(job.Error, "upload: disk full") {
-		t.Fatalf("job error = %q, want upload failure", job.Error)
-	}
-	if guestRunCalls != 0 {
-		t.Fatalf("guestRunCalls = %d, want %d when upload fails", guestRunCalls, 0)
-	}
-}
-
-func TestInstallUnsupportedPackageFailsBeforeBackendCalls(t *testing.T) {
-	jm := jobs.NewManager(nil)
-	m := New(jm)
-
-	uploadCalls := 0
-	guestRunCalls := 0
-	backend := &fakeBackend{
-		backendType: "workstation",
-		displayName: "Local Workstation",
-		uploadFunc: func(ctx context.Context, emit jobs.EmitFn, req UploadRequest) error {
-			uploadCalls++
-			return nil
-		},
-		guestRunFunc: func(ctx context.Context, emit jobs.EmitFn, req RunRequest) error {
-			guestRunCalls++
-			return nil
-		},
-	}
-	m.ReplaceBackend(context.Background(), backend)
-
-	jobID := m.Install(InstallRequest{
-		VMRef:     "vm-1",
-		Username:  "tester",
-		Password:  "secret",
-		LocalPath: "/tmp/archive.zip",
-		GuestOS:   "ubuntu-64",
-	})
-	job := waitForJob(t, jm, jobID)
-
-	if job.Status != jobs.StatusFailed {
-		t.Fatalf("job status = %q, want %q", job.Status, jobs.StatusFailed)
-	}
-	if !strings.Contains(job.Error, "unsupported package type") {
-		t.Fatalf("job error = %q, want unsupported package error", job.Error)
-	}
-	if uploadCalls != 0 || guestRunCalls != 0 {
-		t.Fatalf("backend calls = upload:%d guestRun:%d, want 0 before autodetect failure", uploadCalls, guestRunCalls)
-	}
-}
-
-func TestInstallCancellationStillRunsBestEffortCleanup(t *testing.T) {
-	jm := jobs.NewManager(nil)
-	m := New(jm)
-
-	var guestRunCommands []string
-	var deletedGuestPaths []string
-	cleanupCalled := make(chan struct{}, 1)
-	backend := &fakeBackend{
-		backendType: "workstation",
-		displayName: "Local Workstation",
-		uploadFunc: func(ctx context.Context, emit jobs.EmitFn, req UploadRequest) error {
-			return nil
-		},
-		guestRunFunc: func(ctx context.Context, emit jobs.EmitFn, req RunRequest) error {
-			guestRunCommands = append(guestRunCommands, req.Command)
-			<-ctx.Done()
-			return ctx.Err()
-		},
-		deleteGuestFileFunc: func(ctx context.Context, vmRef, username, password, guestPath string) error {
-			if ctx.Err() != nil {
-				t.Fatalf("cleanup ran with cancelled context: %v", ctx.Err())
-			}
-			deletedGuestPaths = append(deletedGuestPaths, guestPath)
-			cleanupCalled <- struct{}{}
-			return nil
-		},
-	}
-	m.ReplaceBackend(context.Background(), backend)
-
-	jobID := m.Install(InstallRequest{
-		VMRef:     "vm-1",
-		Username:  "tester",
-		Password:  "secret",
-		LocalPath: "/tmp/agent.deb",
-		GuestOS:   "ubuntu-64",
-	})
-
-	time.Sleep(50 * time.Millisecond)
-	jm.Cancel(jobID)
-	job := waitForJob(t, jm, jobID)
-	if job.Status != jobs.StatusCancelled {
-		t.Fatalf("job status = %q, want %q", job.Status, jobs.StatusCancelled)
-	}
-
-	select {
-	case <-cleanupCalled:
-	case <-time.After(500 * time.Millisecond):
-		t.Fatalf("cleanup was not called after cancellation; guestRunCommands=%v", guestRunCommands)
-	}
-	if len(deletedGuestPaths) != 1 || deletedGuestPaths[0] != "/tmp/agent.deb" {
-		t.Fatalf("deleted guest paths = %v, want [%q]", deletedGuestPaths, "/tmp/agent.deb")
 	}
 }
 

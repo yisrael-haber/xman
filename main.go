@@ -3,6 +3,9 @@ package main
 import (
 	"embed"
 
+	"xman/internal/jobs"
+	"xman/internal/manager"
+
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
@@ -13,6 +16,8 @@ var assets embed.FS
 
 func main() {
 	app := NewApp()
+	managerAPI := manager.NewAPI(app.manager)
+	jobsAPI := jobs.NewAPI(app.jobs)
 
 	err := wails.Run(&options.App{
 		Title:  "xman",
@@ -26,8 +31,8 @@ func main() {
 		OnShutdown:       app.shutdown,
 		Bind: []interface{}{
 			app,
-			app.Manager,
-			app.Jobs,
+			managerAPI,
+			jobsAPI,
 		},
 	})
 

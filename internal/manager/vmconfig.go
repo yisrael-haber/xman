@@ -38,7 +38,7 @@ func validateVMConfigUpdateRequest(req VMConfigUpdateRequest) error {
 	}
 }
 
-func (m *Manager) VMUpdateConfig(req VMConfigUpdateRequest) string {
+func (m *Manager) vmUpdateConfig(req VMConfigUpdateRequest) string {
 	return m.submitJob("config", "Update VM Configuration", func(ctx context.Context, emit jobs.EmitFn) error {
 		if err := validateVMConfigUpdateRequest(req); err != nil {
 			return err

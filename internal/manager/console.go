@@ -10,7 +10,7 @@ import (
 )
 
 // VMConsoleInfo resolves console launch diagnostics for the given VM.
-func (m *Manager) VMConsoleInfo(vmRef string) (ConsoleLaunchInfo, error) {
+func (m *Manager) vmConsoleInfo(vmRef string) (ConsoleLaunchInfo, error) {
 	cb, err := m.getConsoleBackend()
 	if err != nil {
 		return ConsoleLaunchInfo{}, err
@@ -26,8 +26,8 @@ func (m *Manager) VMConsoleInfo(vmRef string) (ConsoleLaunchInfo, error) {
 }
 
 // VMConsoleURL resolves a fresh browser console URL for the given VM.
-func (m *Manager) VMConsoleURL(vmRef string) (string, error) {
-	info, err := m.VMConsoleInfo(vmRef)
+func (m *Manager) vmConsoleURL(vmRef string) (string, error) {
+	info, err := m.vmConsoleInfo(vmRef)
 	if err != nil {
 		return "", err
 	}

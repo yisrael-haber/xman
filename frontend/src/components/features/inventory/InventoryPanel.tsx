@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { manager } from '../../../../wailsjs/go/models';
-import { InventoryHosts, InventoryDatastores } from '../../../../wailsjs/go/manager/Manager';
+import { InventoryHosts, InventoryDatastores } from '../../../../wailsjs/go/manager/API';
 
 type TabID = 'hosts' | 'datastores';
 

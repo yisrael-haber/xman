@@ -23,7 +23,7 @@ type DatastoreInfo struct {
 	Accessible bool    `json:"accessible"`
 }
 
-func (m *Manager) InventoryHosts() ([]HostInfo, error) {
+func (m *Manager) inventoryHosts() ([]HostInfo, error) {
 	b, err := m.getInventoryBackend()
 	if err != nil {
 		return nil, err
@@ -31,7 +31,7 @@ func (m *Manager) InventoryHosts() ([]HostInfo, error) {
 	return b.ListHosts(m.operationContext())
 }
 
-func (m *Manager) InventoryDatastores() ([]DatastoreInfo, error) {
+func (m *Manager) inventoryDatastores() ([]DatastoreInfo, error) {
 	b, err := m.getInventoryBackend()
 	if err != nil {
 		return nil, err
